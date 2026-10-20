@@ -19,31 +19,39 @@ _SPACE_RE = re.compile(r"\s+")
 #: Refusals that a model writes when it is not told to emit the literal token
 #: UNKNOWN. Without these the abstention metric silently counts refusals as
 #: "other", which is how the no-context control was first mis-scored.
+#: All patterns are apostrophe-free because normalisation removes apostrophes.
 _REFUSAL_PATTERNS: tuple[str, ...] = (
     "unknown",
-    "i don't know",
-    "i do not know",
+    "i dont know",
     "dont know",
+    "do not know",
+    "dont have that information",
     "do not have that information",
-    "don't have that information",
+    "dont have enough information",
+    "do not have enough information",
+    "not enough information",
+    "insufficient information",
     "no information",
     "does not provide",
     "do not provide",
     "not provided",
     "cannot be determined",
     "can not be determined",
-    "can't determine",
+    "cant determine",
     "cannot determine",
     "unable to determine",
-    "not enough information",
-    "insufficient information",
     "no answer",
 )
 
 
 def normalize_answer(text: str) -> str:
-    """Lowercase, drop punctuation and thousands separators, collapse spaces."""
+    """Lowercase, drop apostrophes, punctuation and thousands separators.
+
+    Apostrophes are removed rather than replaced with a space so that "don't"
+    becomes "dont" and still matches the refusal patterns below.
+    """
     lowered = (text or "").lower().replace(",", "")
+    lowered = lowered.replace("'", "").replace("\u2019", "").replace("`", "")
     cleaned = _STRIP_RE.sub(" ", lowered)
     return _SPACE_RE.sub(" ", cleaned).strip()
 

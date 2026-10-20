@@ -1,8 +1,58 @@
 # STATE
 
-last_updated: 2026-10-20 15:40 (audit rerun #2 scheduled: refusal metric + ATK6 variant 1)
+last_updated: 2026-10-20 16:30 (WP2 complete: all three audit stages pass)
 current_phase: B
-current_wp: WP2d (two bugs found in the first audit run, both fixed) -> WP3
+current_wp: WP2 COMPLETE -> WP3 (retrieval + local signals)
+
+## WP2 final result (all numbers measured, not mock)
+
+Gate R (retrieval): PASS. Poison reaches the top-15 pool in 100% of cells and the
+top-5 in 98-100%; the clean passage stays in the pool in 100%.
+
+Gate G (generation condition, plain prompt, 1800 passages):
+
+| family | answers target | answers correct |
+|---|---|---|
+| ATK1_PoisonedRAG | 100.0% | 0.0% |
+| ATK2_CorruptRAG_AS | 99.3% | 0.7% |
+| ATK3_InstructionInjection | 100.0% | 0.0% |
+| ATK4_DIGA_Stuffing | 99.3% | 0.0% |
+| ATK5_StealthAssertion | 100.0% | 0.0% |
+| ATK6_Hedged_Silver | 82.3% | 16.0% (gate value 84.0% not_correct) |
+
+`GATE G: PASS`, no dud variants (all three ATK6 variants now 77-91%).
+
+Stage C controls:
+
+- clean context (no poison anywhere): **97.0% correct** - the retrieval setup is
+  sound and the low clean accuracy under poison is caused by the poison
+- no context: **0.0% correct, 100% refused** - external-knowledge leak 0.0%,
+  validity PASS. The corpus is fictional, so the model cannot answer without it.
+
+Stage B baseline (1200 contexts x 2 prompts):
+
+| condition | ASR | clean accuracy | abstention | mean ATR |
+|---|---|---|---|---|
+| plain | 68.6% | 31.4% | 0.0% | 0.40 |
+| guarded | 27.3% | 4.2% | 68.4% | 0.40 |
+
+The abstention instruction removes 41 points of attack success and 27 points of
+correct answers: it is a blanket refusal, not a precision filter. Per family it
+is worst where the attack is weakest (ATK5 inj1: clean 65% -> 4% while ASR only
+35% -> 3%), which means the instruction mostly silences queries that the attack
+never threatened. ATK3 at injection=3 barely notices it (ASR delta +7%), because
+an explicit instruction overrides the abstention instruction.
+
+Per-family baseline gives the mechanism for the report: effectiveness tracks rank
+position and poison count, not persuasiveness. ATK1 inj1 76% -> inj3 100%;
+ATK5 inj1 35% -> inj3 97%; ATK6 inj1 28% -> inj3 37%.
+
+Spend so far: balance 84.27 -> 79.19 CNY, i.e. about 5.1 CNY for the whole audit
+programme including two throwaway probes.
+
+## Next action (exact command for human)
+
+Nothing: WP3 is offline. The agent will run it and report.
 
 ## WP2d: what the first audit run got right, and the two things it exposed
 
