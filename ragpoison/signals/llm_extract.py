@@ -33,8 +33,8 @@ from .extract import _label, build_context
 
 LLM_SIGNALS: tuple[str, ...] = ("s3", "s3b", "s4", "s5")
 VIEWS: tuple[str, ...] = ("relevance", "instruction", "contradiction", "inducement")
-#: Fallback reference density when the calibration split is not in the run.
-DEFAULT_C_REF = 0.10
+#: Fallback reference density when no answered clean candidate is in the run.
+DEFAULT_C_REF = 0.09
 
 
 def _views_enabled(config: Config) -> dict[str, bool]:
@@ -257,6 +257,7 @@ def extract_llm(
                     "answer": answer,
                     "answer_parsed": int(answer_ok.get(candidate.doc_id, False)),
                     "s3_c": round(c_density, 6),
+                    "s3_unknown": int(str(answer).strip().upper().startswith("UNKNOWN")),
                     "s3b": round(majority.get(candidate.doc_id, 0.0), 6),
                     "s4": round(s4_score, 6),
                     "s4_category": s4_category,
@@ -272,22 +273,29 @@ def extract_llm(
             )
 
     # --------------------------------------------------- density normalisation
-    calib_densities = [
-        row["s3_c"] for row in rows if row["split"] == "calib" and row["label_class"] == "clean"
+    # The reference density comes from *answered* clean candidates: an UNKNOWN
+    # answer contributes no answer words, so its density is not comparable.
+    answered_clean = [
+        row["s3_c"]
+        for row in rows
+        if row["label_class"] == "clean" and not row["s3_unknown"]
     ]
-    if len(calib_densities) >= 30:
-        c_ref, c_ref_source = _median(calib_densities), "calib_clean"
+    calib_answered_clean = [
+        row["s3_c"]
+        for row in rows
+        if row["split"] == "calib" and row["label_class"] == "clean" and not row["s3_unknown"]
+    ]
+    if len(calib_answered_clean) >= 30:
+        c_ref, c_ref_source = _median(calib_answered_clean), "calib_clean_answered"
+    elif answered_clean:
+        c_ref, c_ref_source = _median(answered_clean), "all_clean_answered_fallback"
     else:
-        all_clean = [row["s3_c"] for row in rows if row["label_class"] == "clean"]
-        c_ref = _median(all_clean) if all_clean else DEFAULT_C_REF
-        c_ref_source = "all_clean_fallback"
+        c_ref, c_ref_source = DEFAULT_C_REF, "default"
     if c_ref <= 0:
         c_ref, c_ref_source = DEFAULT_C_REF, "default"
 
     for row in rows:
-        row["s3"] = round(
-            s3_freq_density.score_from_density(row["s3_c"], row["answer"], c_ref), 6
-        )
+        row["s3"] = round(s3_freq_density.score_from_density(row["s3_c"], c_ref), 6)
 
     # ---------------------------------------------------------------- persistence
     written: list[str] = []
