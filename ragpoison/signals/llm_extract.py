@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import json
 
+from pathlib import Path
+
 from ..config import Config, load_config
 from ..datagen.corpora import iter_query_corpora
 from ..datagen.loader import load_bundle
@@ -56,6 +58,7 @@ def extract_llm(
     family: str | None = None,
     injection: int | None = None,
     query_id: str | None = None,
+    query_ids: list[str] | None = None,
     limit: int | None = None,
     config: Config | None = None,
     top_n: int | None = None,
@@ -63,6 +66,8 @@ def extract_llm(
     concurrency: int | None = None,
     budget_cny: float | None = None,
     write: bool = True,
+    out_dir: Path | None = None,
+    dry_run: bool = False,
     quiet: bool = False,
 ) -> dict:
     cfg = config or load_config("default.yaml")
@@ -70,6 +75,7 @@ def extract_llm(
     batch_size = int(cfg.get("detectors.mv_batch_size"))
     max_tokens = int(cfg.get("llm.max_tokens_json"))
     bundle = load_bundle(seed)
+    allowed = set(query_ids) if query_ids else None
     views = _views_enabled(cfg)
     s4_enabled = bool(cfg.get("detectors.enable_instruction_judge"))
     s5_enabled = bool(cfg.get("detectors.enable_multiview_judge"))
@@ -81,6 +87,8 @@ def extract_llm(
         if injection is not None and int(corpus["injection"]) != injection:
             continue
         if query_id and corpus["query_id"] != query_id:
+            continue
+        if allowed is not None and corpus["query_id"] not in allowed:
             continue
         if limit is not None and len(selected) >= limit:
             break
@@ -168,6 +176,50 @@ def extract_llm(
             f"({len(s4_seen)} distinct passages for S4) ...",
             flush=True,
         )
+
+    if dry_run:
+        # Count what *would* be paid, without paying. Identical prompts across
+        # families and injection sizes collapse into one call, and that saving is
+        # large enough to be worth planning around.
+        unique_keys = {client._cache_key(call) for call in calls}
+        already_cached = sum(
+            1 for key in unique_keys if client._cache_path(key).exists()
+        )
+        input_tokens = sum(
+            len(call.system) + len(call.user) for call in calls
+        ) // 4
+        return {
+            "seed": seed,
+            "mock": mock,
+            "dry_run": True,
+            "instances": len(plans),
+            "requests": len(calls),
+            "unique_requests": len(unique_keys),
+            "already_cached": already_cached,
+            "to_pay": len(unique_keys) - already_cached,
+            "distinct_s4_passages": len(s4_seen),
+            "estimated_input_tokens": input_tokens,
+            "estimated_cost_cny": round(
+                (len(unique_keys) - already_cached)
+                * (input_tokens / max(len(unique_keys), 1))
+                / 1e6
+                * float(cfg.get("llm.price_input_cny_per_mtok")),
+                2,
+            ),
+            "rows": 0,
+            "parse": {"s3_fail": 0, "s4_fail": 0, "s5_fail": 0, "s3_unknown": 0, "s3_total": 0},
+            "s3_parse_fail_rate": 0.0,
+            "s4_parse_fail_rate": 0.0,
+            "s3_unknown_rate": 0.0,
+            "c_ref": 0.0,
+            "c_ref_source": "dry_run",
+            "s5_batches": sum(len(plan["calls"].get("s5", [])) for plan in plans),
+            "llm": client.summary(),
+            "files": [],
+            "snapshot": "",
+            "rows_data": [],
+        }
+
     results = client.complete_many(calls, label="signals    ", progress_every=200)
     outcome_by_call = {id(call): result for call, result in zip(calls, results)}
 
@@ -300,7 +352,7 @@ def extract_llm(
     # ---------------------------------------------------------------- persistence
     written: list[str] = []
     if write and rows:
-        target_dir = repo_path("results", "signals", f"seed{seed}")
+        target_dir = out_dir or repo_path("results", "signals", f"seed{seed}")
         target_dir.mkdir(parents=True, exist_ok=True)
         by_corpus: dict[str, list[dict]] = {}
         for row in rows:

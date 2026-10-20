@@ -40,9 +40,6 @@ EXIT_PLANNED = 3
 #: Commands promised by the specification, mapped to the work package that
 #: implements them. Registered now so `--help` documents the full contract.
 PLANNED: dict[str, str] = {
-    "pilot": "WP5: R1 pilot experiment",
-    "full": "WP7: R2 main experiment",
-    "replicate": "WP7: R3 seed replication",
     "refusion": "WP6: offline ablation",
     "metrics": "WP6: statistics and figures",
     "figures": "WP6: report figures",
@@ -778,6 +775,53 @@ def cmd_gen_data(args: argparse.Namespace) -> int:
     return exit_code
 
 
+
+# --------------------------------------------------------------------------- #
+# experiment runs (WP5)
+# --------------------------------------------------------------------------- #
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    from .experiment import MODES, run
+    from .llm.client import BudgetExceeded
+
+    try:
+        payload = run(
+            args.mode,
+            seeds=args.seeds,
+            limit=args.limit,
+            mock=args.mock,
+            dry_run=args.dry_run,
+        )
+    except BudgetExceeded as exc:
+        print(f"BUDGET STOP: {exc}")
+        print("Everything already paid for is cached; raise the cap in the config and rerun.")
+        return EXIT_FAILED
+
+    runs = payload["runs"]
+    if not runs:
+        print("no runs were performed")
+        return EXIT_FAILED
+    if args.dry_run:
+        total = sum(int(summary.get("to_pay", 0)) for summary in runs)
+        cost = sum(float(summary.get("estimated_cost_cny", 0.0)) for summary in runs)
+        print()
+        print(f"dry run: {total} calls would be paid for, about {cost:.2f} CNY")
+        return EXIT_OK
+    for summary in runs:
+        if summary["s3_parse_fail_rate"] > 0.05 or summary["s4_parse_fail_rate"] > 0.05:
+            print(
+                f"WARNING: parse-failure rate above 5% on seed {summary['seed']}; "
+                "inspect the report before spending on a larger run."
+            )
+        if summary["s3_unknown_rate"] > 0.95:
+            print(
+                f"WARNING: S3 extracted no answer for {summary['s3_unknown_rate']:.1%} of "
+                "candidates; the signal is uninformative in this configuration."
+            )
+    return EXIT_OK
+
+
 # --------------------------------------------------------------------------- #
 # linters
 # --------------------------------------------------------------------------- #
@@ -1000,6 +1044,21 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("spend", help="read the account balance (free endpoint)").set_defaults(
         func=cmd_spend
     )
+
+
+    for mode in ("pilot", "full", "replicate"):
+        runner = subparsers.add_parser(
+            mode, help=f"run the {mode} experiment stage (see configs/{mode}.yaml)"
+        )
+        runner.add_argument("--seeds", type=int, nargs="+", default=None, help="override the seeds")
+        runner.add_argument("--limit", type=int, default=None, help="cap the instance count")
+        runner.add_argument("--mock", action="store_true", help="no network: plumbing test only")
+        runner.add_argument(
+            "--dry-run",
+            action="store_true",
+            help="count the calls that would be paid for, without calling anything",
+        )
+        runner.set_defaults(func=cmd_run, mode=mode)
 
     for command in PLANNED:
         stub = subparsers.add_parser(command, help=f"not implemented yet ({PLANNED[command]})")

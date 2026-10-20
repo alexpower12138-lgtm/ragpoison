@@ -133,6 +133,7 @@ def extract(
     family: str | None = None,
     injection: int | None = None,
     query_id: str | None = None,
+    query_ids: list[str] | None = None,
     limit: int | None = None,
     config: Config | None = None,
     top_n: int | None = None,
@@ -143,6 +144,7 @@ def extract(
     cfg = config or load_config("default.yaml")
     pool = int(top_n or cfg.get("retrieval.top_n"))
     bundle = load_bundle(seed)
+    allowed = set(query_ids) if query_ids else None
 
     from .calibration import compute as compute_calibration
 
@@ -160,6 +162,8 @@ def extract(
         if injection is not None and int(corpus["injection"]) != injection:
             continue
         if query_id and corpus["query_id"] != query_id:
+            continue
+        if allowed is not None and corpus["query_id"] not in allowed:
             continue
         if limit is not None and instances >= limit:
             break
