@@ -49,7 +49,6 @@ PLANNED: dict[str, str] = {
     "ui-check": "WP8: headless Streamlit check",
     "dashboard": "WP8: Streamlit application",
     "scan": "WP9: periodic corpus audit",
-    "spend": "WP4: account balance",
 }
 
 _CJK_RE = re.compile(r"[\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef\u3000-\u303f]")
@@ -380,21 +379,67 @@ def _scan_for_secrets() -> list[str]:
 
 
 def cmd_audit(args: argparse.Namespace) -> int:
-    from .audit import retrieval_audit
+    from .audit import baseline_audit, generation_audit, retrieval_audit
+    from .llm.client import BudgetExceeded
 
     stage = args.stage
-    if stage == "retrieval":
-        payload = retrieval_audit.run(seed=args.seed, top_n=args.top_n)
-        print(retrieval_audit.summarize(payload))
-        return EXIT_OK if payload["gate_r"]["passed"] else EXIT_FAILED
+    exit_code = EXIT_OK
+    try:
+        if stage in {"retrieval", "all"}:
+            payload = retrieval_audit.run(seed=args.seed, top_n=args.top_n)
+            print(retrieval_audit.summarize(payload))
+            print()
+            if not payload["gate_r"]["passed"]:
+                exit_code = EXIT_FAILED
 
-    if stage in {"generation", "baseline", "all"}:
-        print(f"audit stage '{stage}' needs the language-model layer and arrives in WP2b.")
-        print("Stage R (retrieval) is available now and costs nothing:")
-        print("    python run.py audit --stage retrieval --seed 42")
-        return EXIT_PLANNED
+        if stage in {"generation", "all"}:
+            payload = generation_audit.run(
+                seed=args.seed,
+                limit=args.limit,
+                mock=args.mock,
+                budget_cny=args.budget_cny,
+                concurrency=args.concurrency,
+            )
+            print(generation_audit.summarize(payload))
+            print()
+            if not payload["gate_g"]["passed"]:
+                exit_code = EXIT_FAILED
 
-    print(f"unknown audit stage: {stage}")
+        if stage in {"baseline", "all"}:
+            payload = baseline_audit.run(
+                seed=args.seed,
+                limit=args.limit,
+                mock=args.mock,
+                budget_cny=args.budget_cny,
+                concurrency=args.concurrency,
+            )
+            print(baseline_audit.summarize(payload))
+    except BudgetExceeded as exc:
+        print()
+        print(f"BUDGET STOP: {exc}")
+        print("Everything already paid for is cached; rerun with a higher cap to continue.")
+        return EXIT_FAILED
+
+    return exit_code
+
+
+# --------------------------------------------------------------------------- #
+# account balance
+# --------------------------------------------------------------------------- #
+
+
+def cmd_spend(args: argparse.Namespace) -> int:
+    from .llm import secretstore
+
+    info = secretstore.status()
+    if not info["present"]:
+        print("no key stored; run `python run.py secret set`")
+        return EXIT_NO_SECRET
+    result = secretstore.verify_key()
+    if result["ok"]:
+        print(f"key {info['masked']} ({info['source']}) is valid; balance {result['balance']}")
+        return EXIT_OK
+    print(f"could not read the balance: {result['message']}")
     return EXIT_FAILED
 
 
@@ -644,16 +689,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     gen.set_defaults(func=cmd_gen_data)
 
-    audit = subparsers.add_parser("audit", help="attack-validity audit (stage R is offline)")
+    audit = subparsers.add_parser("audit", help="attack-validity audit (R is free, G and B cost money)")
     audit.add_argument(
         "--stage",
         default="retrieval",
         choices=["retrieval", "generation", "baseline", "all"],
-        help="retrieval (free) | generation (API) | baseline (API) | all",
+        help="retrieval (free) | generation (Gate G) | baseline (undefended ASR) | all",
     )
     audit.add_argument("--seed", type=int, default=42, help="bundle seed (default 42)")
     audit.add_argument("--top-n", type=int, default=None, help="override the detection pool size")
+    audit.add_argument("--limit", type=int, default=None, help="only the first N instances (smoke test)")
+    audit.add_argument("--mock", action="store_true", help="no network, no key: plumbing test only")
+    audit.add_argument("--budget-cny", type=float, default=None, help="override the spend cap")
+    audit.add_argument("--concurrency", type=int, default=None, help="override parallel requests")
     audit.set_defaults(func=cmd_audit)
+
+    subparsers.add_parser("spend", help="read the account balance (free endpoint)").set_defaults(
+        func=cmd_spend
+    )
 
     for command in PLANNED:
         stub = subparsers.add_parser(command, help=f"not implemented yet ({PLANNED[command]})")

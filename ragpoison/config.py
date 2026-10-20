@@ -46,6 +46,9 @@ _SCHEMA: Schema = {
         "max_tokens_json": int,
         "max_tokens_answer": int,
         "provider": str,
+        "price_input_cny_per_mtok": (int, float),
+        "price_input_cached_cny_per_mtok": (int, float),
+        "price_output_cny_per_mtok": (int, float),
     },
     "retrieval": {
         "retriever": str,

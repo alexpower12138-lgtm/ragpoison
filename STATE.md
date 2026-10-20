@@ -1,8 +1,8 @@
 # STATE
 
-last_updated: 2026-10-20 11:20 (WP2a reworked: two corpus designs, 20/20 PASS)
+last_updated: 2026-10-20 12:40 (WP2b built and verified offline with the mock transport)
 current_phase: B
-current_wp: WP2a (done, two corpora views) -> WP2b (generation and baseline stages)
+current_wp: WP2b (code complete, awaiting the human's first paid run) -> WP3
 repo_root: C:\Users\13619\Desktop\notes\courses\compsci764\0728research_project\1020playground\ragpoison
 spec: ..\1020项目计划书_v2.md
 
@@ -85,10 +85,43 @@ identical. V19 confirms seed 43 has the same structure and different content.
 
 ## Blocked / waiting on human
 
-- Nothing blocks WP2b. It needs the stored API key (present) and about 50 minutes.
+- WP2b needs two paid runs by the human (about 5 CNY, about 50 minutes total).
+  Nothing else blocks; the code is complete and verified offline.
 - If the repository should be published, the human creates an empty GitHub
   repository and provides the HTTPS URL; a credential must be configured at that
   point. Never paste a token into the conversation.
+
+## WP2b built (LLM layer + stages G and B)
+
+New modules:
+
+| file | role |
+|---|---|
+| `llm/prompts.py` | frozen prompt texts, versioned, snapshotted to `prompts_snapshot/` before each run |
+| `llm/client.py` | threaded client: on-disk cache, retry with backoff, CNY budget cap, per-call ledger in `logs/llm_calls.jsonl`, `reports/SPEND.md` |
+| `llm/mock.py` | deterministic offline responder, so the pipeline can be exercised with no network and no key |
+| `generation/answer.py` | answer normalisation, matching, and the four-way label (target/correct/unknown/other) |
+| `audit/generation_audit.py` | stage G: 1800 passages, one prompt each, Gate G |
+| `audit/baseline_audit.py` | stage B: 1200 undefended generations, ASR / clean accuracy / abstention / ATR |
+
+Verification performed offline with `--mock` (no network, no key, no spend):
+
+- full stage G over 1800 passages: 3.3 s, aggregation and gate verdict correct
+- full stage B over 1200 instances: 21.6 s, per-slice table correct, ATR 0.20/0.60
+- rerun of stage G: `calls 0, cache hits 1800`, i.e. resume never pays twice
+- `python run.py spend` works and reported a balance of 82.75 CNY
+- mock answers are kept in `cache/llm_mock/` and the transport is part of the
+  cache key, so a mock answer can never be served to a real run
+- all mock artefacts were deleted afterwards: the human's run starts from an
+  empty cache and clean reports
+
+Safety properties worth knowing:
+
+- the budget cap is enforced *before* each call, in CNY, and the run stops with
+  `BUDGET STOP` while keeping everything already cached
+- prices live in `configs/default.yaml` and are used only by the guard; reported
+  cost comes from the provider's own usage counters when present
+- `--limit N` exists so the first real call can cost a fraction of a cent
 
 ## WP2a result (retrieval audit, offline, free) - reworked
 
@@ -114,19 +147,24 @@ files; the 1200 query corpora are derived, not stored, and the manifest records
 both designs under `corpus_design`.
 ## Next action (exact command for human)
 
+Smoke first (a fraction of a cent, about 10 seconds, proves the key, the network
+and the parser all work):
+
 ```
-python run.py audit --stage retrieval --seed 42
+python run.py audit --stage generation --seed 42 --limit 12
 ```
 
-(works now, free, about 20 s). Next after that is the first paid stage:
+Then the two real stages:
 
 ```
 python run.py audit --stage generation --seed 42
+python run.py audit --stage baseline   --seed 42
 ```
 
-which arrives with WP2b.
+Run them from the repository root. Expected total: about 5 CNY, about 50 minutes.
+Re-running the same command is safe: finished calls come from the cache.
 
-Say: start WP2b.
+Say: WP2b done (after the two runs) and I will start WP3.
 
 ## Open issues / decisions taken
 

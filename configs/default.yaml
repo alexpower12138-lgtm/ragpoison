@@ -19,6 +19,12 @@ llm:
   temperature: 0
   max_tokens_json: 120        # judge outputs (JSON)
   max_tokens_answer: 32       # final answers (short strings)
+  # Prices are used ONLY by the budget guard, in CNY per million tokens.
+  # Reported costs come from the provider's own usage counters; check these
+  # against your bill before trusting the guard's estimate.
+  price_input_cny_per_mtok: 2.0
+  price_input_cached_cny_per_mtok: 0.5
+  price_output_cny_per_mtok: 8.0
 
 retrieval:
   retriever: bm25             # bm25 | tfidf
