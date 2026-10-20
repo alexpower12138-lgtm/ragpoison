@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import os
 import re
+import shutil
 import subprocess
 import sys
 import traceback
@@ -157,8 +159,6 @@ def cmd_secret(args: argparse.Namespace) -> int:
         if args.from_stdin:
             key = sys.stdin.readline()
         elif args.from_env:
-            import os
-
             key = os.environ.get(args.from_env, "")
             if not key:
                 print(f"environment variable {args.from_env} is empty or unset")
@@ -396,6 +396,29 @@ def cmd_lint_lang(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _find_git() -> str | None:
+    """Locate the git executable.
+
+    ``shutil.which`` is tried first; on Windows the standard install locations
+    are probed as well, because a long-lived parent process (an IDE, a shell
+    started before the install) keeps a stale PATH and would otherwise silently
+    skip the history scan.
+    """
+    found = shutil.which("git")
+    if found:
+        return found
+    if sys.platform == "win32":
+        candidates = [
+            r"C:\Program Files\Git\cmd\git.exe",
+            r"C:\Program Files (x86)\Git\cmd\git.exe",
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Git", "cmd", "git.exe"),
+        ]
+        for candidate in candidates:
+            if Path(candidate).exists():
+                return candidate
+    return None
+
+
 def cmd_lint_secrets(args: argparse.Namespace) -> int:
     findings = _scan_for_secrets()
     if findings:
@@ -404,22 +427,47 @@ def cmd_lint_secrets(args: argparse.Namespace) -> int:
         print(f"LINT-SECRETS: FAIL ({len(findings)} files)")
         return EXIT_FAILED
 
-    if (REPO_ROOT / ".git").exists():
-        try:
-            history = subprocess.run(
-                ["git", "log", "-p", "--all", "--", "."],
-                cwd=REPO_ROOT,
-                capture_output=True,
-                text=True,
-                timeout=120,
-                check=False,
-            )
-            if SECRET_RE.search(history.stdout or ""):
-                print("git history contains key-shaped material; rotate the key and rewrite history")
-                print("LINT-SECRETS: FAIL (history)")
-                return EXIT_FAILED
-        except (OSError, subprocess.SubprocessError) as exc:
-            print(f"warning: could not scan git history ({exc})")
+    if not (REPO_ROOT / ".git").exists():
+        print("LINT-SECRETS: PASS (working tree only; not a git repository)")
+        return EXIT_OK
+
+    git = _find_git()
+    if git is None:
+        print("warning: git not found, so repository history was NOT scanned")
+        print("LINT-SECRETS: PASS (working tree only)")
+        return EXIT_OK
+
+    try:
+        counted = subprocess.run(
+            [git, "rev-list", "--count", "--all"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        commits = int((counted.stdout or "0").strip() or 0)
+        if commits == 0:
+            print("LINT-SECRETS: PASS (working tree; the repository has no commits yet)")
+            return EXIT_OK
+
+        history = subprocess.run(
+            [git, "log", "-p", "--all"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=False,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if SECRET_RE.search(history.stdout or ""):
+            print("git history contains key-shaped material; rotate the key and rewrite history")
+            print("LINT-SECRETS: FAIL (history)")
+            return EXIT_FAILED
+        print(f"history scanned: {commits} commit(s)")
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        print(f"warning: could not scan git history ({exc})")
 
     print("LINT-SECRETS: PASS")
     return EXIT_OK
