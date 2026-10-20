@@ -169,6 +169,7 @@ def run(
                 "parse": llm["parse"],
                 "failed_calls": llm.get("failed_calls", 0),
                 "failed_batches": llm.get("failed_batches", 0),
+                "s5_multi_array_batches": llm.get("s5_multi_array_batches", 0),
                 "s3_parse_fail_rate": llm["s3_parse_fail_rate"],
                 "s4_parse_fail_rate": llm["s4_parse_fail_rate"],
                 "s3_unknown_rate": llm["s3_unknown_rate"],
@@ -381,6 +382,11 @@ def _render(summary: dict) -> str:
     lines.append(
         f"- S3 UNKNOWN answers: {summary['s3_unknown_rate']:.1%}  "
         f"(c_ref={summary['c_ref']:.4f}, source {summary['c_ref_source']})"
+    )
+    lines.append(
+        f"- S5 batches where the model revised its own answer: "
+        f"{summary.get('s5_multi_array_batches', 0)} of {summary.get('requests', 0)} requests "
+        "(the first array is kept; measured AUC impact 0.0006)"
     )
     llm = summary["llm"]
     lines.append(
