@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import json
 import os
 import re
 import shutil
@@ -39,7 +40,6 @@ EXIT_PLANNED = 3
 #: Commands promised by the specification, mapped to the work package that
 #: implements them. Registered now so `--help` documents the full contract.
 PLANNED: dict[str, str] = {
-    "gen-data": "WP1: synthetic data generator",
     "audit": "WP2: attack-validity audits",
     "pilot": "WP5: R1 pilot experiment",
     "full": "WP7: R2 main experiment",
@@ -376,6 +376,72 @@ def _scan_for_secrets() -> list[str]:
 
 
 # --------------------------------------------------------------------------- #
+# data generation (WP1)
+# --------------------------------------------------------------------------- #
+
+
+def cmd_gen_data(args: argparse.Namespace) -> int:
+    from .datagen.generator import generate, topic_histogram
+    from .datagen.validator import summarize, validate
+
+    seeds = args.seeds or [args.seed]
+    exit_code = EXIT_OK
+    log_lines: list[str] = []
+
+    for seed in seeds:
+        print(f"generating synthetic bundle for seed {seed} ...")
+        result = generate(seed)
+        counts = result.counts()
+        print(
+            f"Generated {counts['facts']} facts / {counts['clean_passages']} clean / "
+            f"{counts['distractor_passages']} distractor / {counts['poisoned_passages']} poisoned / "
+            f"{counts['corpora']} corpora"
+        )
+        histogram = topic_histogram(result.facts)
+        print("topic histogram: " + ", ".join(f"{k}={v}" for k, v in histogram.items()))
+        lengths = [row["n_words"] for row in result.clean + result.distractors + result.poisoned]
+        print(f"passage words: min={min(lengths)} max={max(lengths)} mean={sum(lengths) / len(lengths):.1f}")
+        print(f"output: {rel(result.out_dir)}")
+
+        notes: list[dict] = []
+        outcomes = validate(
+            result,
+            check_determinism=not args.skip_determinism,
+            check_seed_cross=not args.skip_cross_seed,
+            notes=notes,
+        )
+        ok, text = summarize(outcomes)
+        print(text)
+        if not ok:
+            exit_code = EXIT_FAILED
+
+        if notes:
+            invalid_path = repo_path("reports", f"retrieval_invalid_seed{seed}.json")
+            invalid_path.parent.mkdir(parents=True, exist_ok=True)
+            invalid_path.write_text(
+                json.dumps(notes, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n"
+            )
+            print(f"invalid instances recorded: {rel(invalid_path)} ({len(notes)} rows)")
+
+        log_lines.append(f"=== seed {seed} ===")
+        log_lines.append(f"generator_version: 1.0.0")
+        log_lines.append(f"counts: {counts}")
+        log_lines.append(f"topic_histogram: {histogram}")
+        log_lines.append(f"words: min={min(lengths)} max={max(lengths)}")
+        for name, digest in sorted(result.sha256.items()):
+            log_lines.append(f"sha256 {digest}  {name}")
+        log_lines.append(text)
+        log_lines.append("")
+
+    log_path = repo_path("reports", "gen_log.txt")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write("\n".join(log_lines) + "\n")
+    print(f"validator log: {rel(log_path)}")
+    return exit_code
+
+
+# --------------------------------------------------------------------------- #
 # linters
 # --------------------------------------------------------------------------- #
 
@@ -539,6 +605,21 @@ def build_parser() -> argparse.ArgumentParser:
     config_parser = subparsers.add_parser("config", help="print the effective configuration")
     config_parser.add_argument("--config", default="default.yaml", help="configuration file name or path")
     config_parser.set_defaults(func=cmd_config)
+
+    gen = subparsers.add_parser("gen-data", help="generate the deterministic synthetic benchmark")
+    gen.add_argument("--seed", type=int, default=42, help="primary seed (default 42)")
+    gen.add_argument("--seeds", type=int, nargs="+", help="generate several seeds in one run")
+    gen.add_argument(
+        "--skip-determinism",
+        action="store_true",
+        help="skip V18 (regenerate and compare bytes); faster during template work",
+    )
+    gen.add_argument(
+        "--skip-cross-seed",
+        action="store_true",
+        help="skip V19 (compare against the other seed); faster during template work",
+    )
+    gen.set_defaults(func=cmd_gen_data)
 
     for command in PLANNED:
         stub = subparsers.add_parser(command, help=f"not implemented yet ({PLANNED[command]})")
