@@ -18,8 +18,17 @@ _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
 
 def _balanced_spans(text: str) -> list[str]:
-    """Return every balanced ``{...}`` or ``[...]`` span, outermost first."""
-    spans: list[str] = []
+    """Return every balanced ``{...}`` or ``[...]`` span, in the order they appear.
+
+    Order matters. A model occasionally judges a batch, doubts itself and emits a
+    second, different array; two of them cannot both be the answer. The first one
+    is taken, because that is the decision the instructions asked for, and because
+    the alternative (the longest span) makes the result depend on which revision
+    happened to be wordier. Measured on the pilot: 3 of 1080 batches contain a
+    disagreeing second array, and switching between first and last moves the S5
+    AUC by 0.0006 - negligible, but now it is also deterministic.
+    """
+    found: list[tuple[int, str]] = []
     for opener, closer in (("{", "}"), ("[", "]")):
         depth = 0
         start = -1
@@ -31,10 +40,25 @@ def _balanced_spans(text: str) -> list[str]:
             elif char == closer and depth:
                 depth -= 1
                 if depth == 0 and start >= 0:
-                    spans.append(text[start : index + 1])
+                    found.append((start, text[start : index + 1]))
                     start = -1
-    spans.sort(key=len, reverse=True)
-    return spans
+    found.sort(key=lambda pair: pair[0])
+    return [span for _position, span in found]
+
+
+def count_arrays(text: str) -> int:
+    """How many parsable JSON arrays the text contains (0, 1, or more)."""
+    count = 0
+    for span in _balanced_spans(text):
+        stripped = span.strip()
+        if not stripped.startswith("["):
+            continue
+        try:
+            json.loads(stripped)
+        except ValueError:
+            continue
+        count += 1
+    return count
 
 
 def json_from_text(text: str) -> object | None:

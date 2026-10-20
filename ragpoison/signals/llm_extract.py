@@ -28,7 +28,7 @@ from ..datagen.loader import load_bundle
 from ..llm import mock as mock_responders
 from ..llm import prompts
 from ..llm.client import Call, LLMClient
-from ..llm.parse import parse_answer, parse_flags, parse_score
+from ..llm.parse import count_arrays, parse_answer, parse_flags, parse_score
 from ..paths import path as repo_path
 from . import s3_freq_density, s3b_majority
 from .extract import _label, build_context
@@ -214,6 +214,7 @@ def extract_llm(
             "c_ref": 0.0,
             "c_ref_source": "dry_run",
             "s5_batches": sum(len(plan["calls"].get("s5", [])) for plan in plans),
+        "s5_multi_array_batches": parse_stats["s5_multi"],
             "llm": client.summary(),
             "files": [],
             "snapshot": "",
@@ -241,7 +242,14 @@ def extract_llm(
     s4_cache: dict[str, tuple[float, str, bool]] = {}
     failed_batches_total = 0
     rows: list[dict] = []
-    parse_stats = {"s3_fail": 0, "s4_fail": 0, "s5_fail": 0, "s3_unknown": 0, "s3_total": 0}
+    parse_stats = {
+        "s3_fail": 0,
+        "s4_fail": 0,
+        "s5_fail": 0,
+        "s5_multi": 0,
+        "s3_unknown": 0,
+        "s3_total": 0,
+    }
 
     for plan in plans:
         context = plan["context"]
@@ -280,6 +288,8 @@ def extract_llm(
             result = outcome_by_call[id(call)]
             view = call.extra["view"]
             expected = list(range(1, len(chunk) + 1))
+            if result.ok and count_arrays(result.text) > 1:
+                parse_stats["s5_multi"] += 1
             parsed = parse_flags(result.text, expected) if result.ok else None
             if parsed is None:
                 parse_stats["s5_fail"] += 1
@@ -430,6 +440,7 @@ def extract_llm(
             parse_stats["s4_fail"] / len(s4_seen) if s4_seen else 0.0
         ),
         "s5_batches": sum(len(plan["calls"].get("s5", [])) for plan in plans),
+        "s5_multi_array_batches": parse_stats["s5_multi"],
         "llm": client.summary(),
         "files": written,
         "snapshot": snapshot.relative_to(repo_path()).as_posix(),
