@@ -1,8 +1,52 @@
 # STATE
 
-last_updated: 2026-10-20 23:10 (WP4 smoke passed; two S3 design errors found and fixed)
+last_updated: 2026-10-21 00:20 (WP0-WP4 signed off after an independent re-derivation)
 current_phase: B
-current_wp: WP4 COMPLETE -> WP5 (pilot runner)
+current_wp: WP0-WP4 VERIFIED -> WP5 (pilot runner)
+
+## WP0-WP4 sign-off: independent re-derivation of every headline number
+
+Recomputed from the raw per-instance files rather than trusting the summaries:
+
+| check | result |
+|---|---|
+| stage G rates recomputed from `*_cells.jsonl` vs the headline JSON | identical, both seeds, 1800 cells each |
+| stage B ASR / clean / abstention recomputed from cells | identical, both seeds, 2400 cells each |
+| stage C leak and clean-accuracy recomputed from cells | 0.000 / 0.970 (seed 42), 0.000 / 0.990 (seed 43), identical |
+| local signal tables | 12 files, 18000 rows, 1200 instances x 15 rows, 0 out-of-range values, no `cross_query_poison` (correct for query-time corpora) |
+| the two signal tables join | 45/45 smoke rows joined on `(corpus_id, query_id, doc_id)`, label agreement 100% |
+| generated data vs its manifest | sha256 verified, both seeds, generator 1.1.0 |
+| prompt snapshots vs current constants | 11/11 identical - no drift between what was paid for and what the code now says |
+| module health | 43 modules import, 0 failures |
+| S1 and S3 formulas vs the plan document | numeric check agrees (sigmoid((z-0.5)/0.15); clip(c/(2 c_ref))) |
+| `selftest` | 16/16 PASS; `lint-lang` and `lint-secrets` PASS; 61 tracked files, 18 commits |
+
+### Problems found by the double-check and fixed
+
+1. **Latent defect: the ablation matrix spoke a language no table understood.**
+   `configs/ablation.yaml` refers to `query`, `cross`, `conflict`,
+   `conflict_majority`, `instruction`, `multiview`, `ppl`; none of those is a
+   column in either signal table. The mapping existed only in prose, so WP6 would
+   have had to reinvent it and could silently pick the wrong column. It is now
+   `signals/base.py: ABLATION_COLUMNS`, and selftest item 5 fails the build if
+   any name in the matrix has no column or if a mapped column disappears.
+2. Dead constant `SIGNAL_ORDER` was 6 names long (missing `conflict_majority`) and
+   used nowhere; replaced by the mapping above.
+3. Noise removed: `logs/llm_calls_mock.jsonl` (8.2 MB of mock traffic, no
+   evidential value) and the 45-row partial `ATK1_PoisonedRAG_inj1.llm.jsonl`
+   left by the smoke test, which could have been mistaken for a complete table.
+   Re-creating the smoke table costs nothing, since every answer is cached.
+
+### Known design facts (not defects)
+
+- S3 and S3b do not separate poison from genuine evidence on this benchmark, for
+  the structural reason recorded above. C3 and C3b measure it.
+- S6 is disabled in the configuration but computed anyway: it is free offline and
+  the ablation needs the column.
+- The `enabled` column in the local table records the configuration, not what was
+  computed; the fusion step is what decides.
+- Paid cache now holds 11198 answers; balance 75.50 CNY, i.e. 8.8 CNY spent on the
+  whole programme so far.
 
 ## WP4 smoke test (3 instances, real API, 0.08 CNY)
 
