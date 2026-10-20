@@ -34,6 +34,24 @@ def signals_dir(mode: str, seed: int) -> Path:
     return repo_path("results", "signals", f"seed{seed}{suffix}")
 
 
+def _reset_dir(directory: Path) -> int:
+    """Delete the table files of a previous run in the same mode.
+
+    Every table is regenerated from the generated corpus (local, free) or from the
+    answer cache (LLM, already paid), so clearing is safe and is the only way to
+    guarantee that a report describes one run. Without this, a ``--limit`` run
+    followed by a different ``--limit`` run joins the leftovers of both and reports
+    an instance count that matches neither.
+    """
+    if not directory.exists():
+        return 0
+    removed = 0
+    for path in directory.glob("*.jsonl"):
+        path.unlink(missing_ok=True)
+        removed += 1
+    return removed
+
+
 def _query_budget(mode: str, cfg: Config) -> int | None:
     if mode == "pilot":
         count = int(cfg.get("experiment.pilot_queries"))
@@ -79,10 +97,12 @@ def run(
         families = cfg.get("experiment.attacks") or []
         expected = len(query_ids) * len(families) * len(injections)
 
+        stale = _reset_dir(target)
         if not quiet:
             print(
                 f"[{mode}] seed {seed}: {len(query_ids)} queries x {len(families)} families x "
-                f"{injections} = {expected} instances, signals -> {rel(target)}",
+                f"{injections} = {expected} instances, signals -> {rel(target)}"
+                + (f" (cleared {stale} file(s) from a previous run)" if stale else ""),
                 flush=True,
             )
 
