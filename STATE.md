@@ -1,8 +1,37 @@
 # STATE
 
-last_updated: 2026-10-20 12:40 (WP2b built and verified offline with the mock transport)
+last_updated: 2026-10-20 14:10 (audit reworked: measurement prompt, controls, ATK6 gate)
 current_phase: B
-current_wp: WP2b (code complete, awaiting the human's first paid run) -> WP3
+current_wp: WP2c (rework done, awaiting the human's rerun) -> WP3
+
+## WP2c rework (what changed and why)
+
+The first paid run measured attacks through a prompt that ordered the model to
+answer UNKNOWN whenever the context was contradictory. That sentence is a
+prompt-level defence, so the "no-defence baseline" was not one. Evidence: on the
+same contexts, a plain prompt flipped 5/6 ATK1 inj1 answers while the guarded
+prompt flipped 4%.
+
+Changes:
+
+- `llm/prompts.py` now holds two generation prompts, `gen_v1_plain` (measurement,
+  no abstention instruction) and `gen_v1_guarded` (the product prompt). The
+  generation-condition prompt is plain too, bumped to `poison_check_v2`.
+- `audit/baseline_audit.py` runs **both** conditions on identical contexts and
+  reports the delta, which is what a single sentence of prompt defence buys and
+  what it costs.
+- `audit/control_audit.py` (new, stage C) adds two controls: a clean-context
+  condition (the real ceiling for clean accuracy) and a no-context condition that
+  checks for external knowledge. The corpus is fictional, so any correct answer
+  with an empty context would mean the model reached outside the corpus.
+- `audit/generation_audit.py`: ATK6 is gated on *answer corruption*
+  (1 - correct) instead of "answered the target", because its construction
+  deliberately keeps the correct value in play.
+- Every audit stage now writes per-instance detail to
+  `results/audit_*_seed<N>_cells.jsonl`, which the failure-case analysis needs.
+- Mock traffic is logged to `logs/llm_calls_mock.jsonl`, and `reports/SPEND.md`
+  records call and token counts only; the authoritative cost figure is the
+  balance delta the human reads with `python run.py spend`.
 repo_root: C:\Users\13619\Desktop\notes\courses\compsci764\0728research_project\1020playground\ragpoison
 spec: ..\1020项目计划书_v2.md
 
@@ -147,24 +176,29 @@ files; the 1200 query corpora are derived, not stored, and the manifest records
 both designs under `corpus_design`.
 ## Next action (exact command for human)
 
-Smoke first (a fraction of a cent, about 10 seconds, proves the key, the network
-and the parser all work):
+Run from the repository root, in this order:
 
 ```
-python run.py audit --stage generation --seed 42 --limit 12
-```
-
-Then the two real stages:
-
-```
+python run.py audit --stage controls   --seed 42
 python run.py audit --stage generation --seed 42
 python run.py audit --stage baseline   --seed 42
+python run.py spend
 ```
 
-Run them from the repository root. Expected total: about 5 CNY, about 50 minutes.
-Re-running the same command is safe: finished calls come from the cache.
+About 50 minutes and about 2.2 CNY in total. Stage G and the plain half of the
+baseline have no cache entries yet (the prompts changed); the guarded half of the
+baseline is already cached and will not be paid twice.
 
-Say: WP2b done (after the two runs) and I will start WP3.
+Expected tokens to look for:
+
+- controls: `EXTERNAL-KNOWLEDGE CHECK: PASS  (leak 0.0%)` and a clean-context
+  accuracy far above the 5.6% measured under poison
+- generation: `GATE G: PASS` for all six families (ATK6 now gated on
+  `not_correct`)
+- baseline: the plain condition's ASR should be far above the 26.6% measured with
+  the guarded prompt, and the delta table quantifies what the instruction costs
+
+Say: audit done and I will start WP3.
 
 ## Open issues / decisions taken
 
