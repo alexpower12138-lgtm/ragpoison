@@ -165,15 +165,27 @@ again.
   attribute label once. Without that, keyword-stuffed passages win the retrieval
   contest and the clean evidence never reaches the detection pool.
 - WP2a-i (OPEN, needs a decision): corpus composition. With 100 poisoned chunks
-  in a 400-chunk corpus, 25% of the knowledge base is adversarial and foreign
-  poisoned passages fill a third to a half of every retrieval pool. Two fixes:
-  (A) enlarge the clean side (200 distractors -> about 1400, so poison is about
-  6%) and evaluate all 100 queries; (B) run in subsets: a corpus contains poison
-  only for the 25 queries being evaluated, with 600 distractors (poison about
-  3.4%), four subset runs to cover 100 queries. A is a smaller change to code but
-  needs many more distractor passages; B is a smaller corpus but changes the
-  corpus manifests (48 instead of 12) and the instance identity. Either way, the
-  pool must stop being dominated by text that is not an attack on the query.
+  in a 400-chunk corpus, foreign poisoned passages occupy a third to a half of
+  every retrieval pool. Measured BM25 scores per query (seed 42, ATK1, inj1):
+  own poison 23.1, best clean passage 17.4, mean foreign poison 11.3, best
+  distractor 3.5. Because *every* poisoned passage outranks *every* distractor,
+  the pool composition is fixed by how many poisoned passages exist in the
+  corpus, not by the poison ratio: enlarging the distractor side cannot help
+  (an earlier draft of this note proposed exactly that; it is wrong).
+  Consequence: a detector that correctly flags "this text is poisoned" is scored
+  as 8 false positives per true positive, so precision is meaningless under the
+  targeted-only label.
+  Recommended fix: two corpus designs, one per research question.
+    (1) RQ1, query-time detection: the knowledge base seen by a query is
+        100 clean + 200 distractors + *this query's* 1 or 3 poisoned passages
+        (303-305 chunks), built compositionally, no 1200 files on disk. This is
+        the faithful PoisonedRAG setting (a few poison chunks in a large base)
+        and makes precision meaningful.
+    (2) RQ2, corpus audit: one shared corpus containing all 100 poisoned chunks
+        per family. Contamination is the point there: the audit's job is to find
+        poison in the whole base.
+  This costs no API money, only a change to the corpora layer, V12/V20 and the
+  audit, about one work package.
 - WP2a-ii: `audit --stage {generation,baseline,all}` now says so explicitly and
   exits 3 instead of producing an argparse error. Unimplemented commands are
   detected before argument parsing.
