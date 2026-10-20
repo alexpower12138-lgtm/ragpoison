@@ -1,8 +1,58 @@
 # STATE
 
-last_updated: 2026-10-21 00:20 (WP0-WP4 signed off after an independent re-derivation)
+last_updated: 2026-10-21 01:40 (WP5 complete: runner, dry-run budget, AUC report)
 current_phase: B
-current_wp: WP0-WP4 VERIFIED -> WP5 (pilot runner)
+current_wp: WP5 COMPLETE -> R1 pilot (human runs it)
+
+## WP5: the experiment runner
+
+`python run.py {pilot|full|replicate} [--dry-run] [--seeds ..] [--limit ..] [--mock]`
+
+Each mode reads its own config, selects instances, builds the local table, builds
+the LLM table, joins them on `(corpus_id, query_id, doc_id)`, and writes
+`reports/run_{mode}_seed{N}.md` plus `results/run_{mode}_seed{N}.json`. The report
+contains the per-signal AUC, the mean score per label, the per-family AUC, and
+three whole instances for a human to eyeball.
+
+- `pilot` writes to `results/signals/seed42_pilot/` so it can never clobber the
+  full table; `full` and `replicate` use `results/signals/seed{N}/`.
+- `--dry-run` builds every request and reports how many would actually be paid
+  for, without calling the API. This exists because the dedupe is not obvious.
+
+### A cost bug found while verifying the runner
+
+The pilot configuration asks for injection size 1 only, but the runner passed
+`injection=None` down to the extractors, so both injection sizes were built: 240
+instances instead of 120, i.e. twice the money. Found by checking that the mock
+pilot had produced 12 signal files instead of 6. The injection filter is now
+pushed into the extractors, and the report prints `instances (configured: N)` so a
+mismatch is visible.
+
+### Measured budget (dry run, real cache state)
+
+| mode | instances | requests built | unique prompts | already cached | **to pay** | estimate |
+|---|---|---|---|---|---|---|
+| R1 pilot | 120 | 3084 | 1092 | 102 | **990** | 2.70 CNY |
+| R2 full | 1200 | 30833 | 10204 | 102 | **10102** | 29.38 CNY |
+| R3 replicate | 1200 | 30832 | 10256 | 0 | **10256** | 29.70 CNY |
+
+The estimate column uses the configured price (2.0 CNY per million input tokens);
+the measured rate from the balance is about 0.65 of that, so the realistic total
+for R1+R2+R3 is closer to **40 CNY, not the 76 CNY estimated earlier**. The reason
+is that 30833 requests collapse into 10204 unique prompts: base-pool passages recur
+across attack families and injection sizes, and the cache recognises them.
+
+R1 also caches 1092 of R2's unique prompts, so running the pilot first costs almost
+nothing extra in the end.
+
+## Next action (exact command for human)
+
+```
+python run.py pilot
+```
+
+About 990 paid calls, 8-12 minutes, roughly 2 CNY. Say `pilot done` afterwards and
+I will read `reports/run_pilot_seed42.md` and decide whether R2 is safe to launch.
 
 ## WP0-WP4 sign-off: independent re-derivation of every headline number
 
