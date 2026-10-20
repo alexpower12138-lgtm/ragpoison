@@ -324,8 +324,53 @@ def cmd_selftest(args: argparse.Namespace) -> int:
             raise RuntimeError(f"non-English text in {offenders[:5]}")
         return f"{len(files)} files are English-only"
 
+    def check_signals() -> str:
+        from .signals import s6_pseudo_ppl
+        from .signals.base import registry
+
+        available = registry()
+        missing = {"s1", "s2", "s6", "s7"} - set(available)
+        if missing:
+            raise RuntimeError(f"signals not registered: {sorted(missing)}")
+        # The character n-gram model must rank gibberish above fluent text.
+        stats = s6_pseudo_ppl.train(
+            ["the quarter ended with a steady demand for the coastal depots"] * 3
+            + ["records of the district office are kept in the same volume"] * 3
+        )
+        fluent = s6_pseudo_ppl._nll(
+            "records of the district office are kept in the same volume",
+            stats["counts"],
+            stats["context_totals"],
+            stats["vocabulary"],
+        )
+        gibberish = s6_pseudo_ppl._nll(
+            "zzqq xjvb qqzz vjxb zzqq xjvb qqzz",
+            stats["counts"],
+            stats["context_totals"],
+            stats["vocabulary"],
+        )
+        if not gibberish > fluent:
+            raise RuntimeError("S6 does not prefer the fluent passage")
+        return f"4 signals registered, S6 separates gibberish ({gibberish:.2f} > {fluent:.2f})"
+
+    def check_calibration() -> str:
+        from .signals.calibration import compute as compute_calibration, calibration_path
+
+        if not repo_path("data", "synthetic", "seed42").exists():
+            return "skipped (no generated data)"
+        payload = compute_calibration(42)
+        sigma = payload["s2"]["sigma"]
+        if not sigma > 0:
+            raise RuntimeError("S2 calibration sigma is not positive")
+        return (
+            f"s2 mu={payload['s2']['mu']:.3f} sigma={sigma:.3f}, "
+            f"cache={rel(calibration_path(42))}"
+        )
+
     checks += [
         ("config: default.yaml loads and validates", check_default_config),
+        ("signals: registry and S6 sanity", check_signals),
+        ("signals: calibration statistics", check_calibration),
         ("config: experiment configs load", check_all_configs),
         ("config: ablation matrix is complete", check_ablation_matrix),
         ("paths: generated directories exist", check_dirs),
@@ -454,6 +499,73 @@ def cmd_spend(args: argparse.Namespace) -> int:
         return EXIT_OK
     print(f"could not read the balance: {result['message']}")
     return EXIT_FAILED
+
+
+# --------------------------------------------------------------------------- #
+# local signals (WP3)
+# --------------------------------------------------------------------------- #
+
+
+def cmd_signals(args: argparse.Namespace) -> int:
+    from .signals.extract import LOCAL_SIGNALS, extract, separability
+
+    result = extract(
+        seed=args.seed,
+        family=args.family,
+        injection=args.injection,
+        query_id=args.query,
+        limit=args.limit,
+        top_n=args.top_n,
+        write=not args.no_write,
+    )
+
+    calibration = result["calibration"]
+    print(
+        f"calibration: s2 mu={calibration['s2']['mu']:.4f} sigma={calibration['s2']['sigma']:.4f} "
+        f"({calibration['s2']['n_pools']} benign pools), "
+        f"s6 median={calibration['s6']['median']:.4f} mad={calibration['s6']['mad']:.4f}"
+    )
+    print(f"instances: {result['instances']}   rows: {result['rows']}")
+    for name in result["files"]:
+        print(f"wrote {name}")
+    print()
+
+    if result["instances"] == 1:
+        # Single-instance mode prints the whole table: this is the WP3 acceptance
+        # check, the place where the schema becomes visible.
+        rows = result["sample_rows"]
+        header = (
+            f"{'rk':>3} {'doc':<22}{'bm25':>8}"
+            + "".join(f"{name:>8}" for name in LOCAL_SIGNALS)
+            + f"  {'label':<18}"
+        )
+        print(header)
+        print("-" * len(header))
+        for row in rows:
+            print(
+                f"{row['rank']:>3} {row['doc_id']:<22}{row['bm25']:>8.2f}"
+                + "".join(f"{row[name]:>8.3f}" for name in LOCAL_SIGNALS)
+                + f"  {row['label_class']:<18}"
+            )
+        print()
+        print(f"atr={rows[0]['atr']:.2f}  n_chunks={rows[0]['n_chunks']}  "
+              f"enabled={rows[0]['enabled']}")
+        return EXIT_OK
+
+    rows = separability(seed=args.seed)
+    header = f"{'family':<26}{'inj':>4} {'label':<18}{'n':>7}" + "".join(
+        f"{name:>9}" for name in LOCAL_SIGNALS
+    )
+    print(header)
+    print("-" * len(header))
+    for row in rows:
+        print(
+            f"{row['attack_family']:<26}{row['injection']:>4} {row['label_class']:<18}{row['n']:>7}"
+            + "".join(f"{row[f'mean_{name}']:>9.3f}" for name in LOCAL_SIGNALS)
+        )
+    print()
+    print("mean signal value by label (higher = more suspicious)")
+    return EXIT_OK
 
 
 # --------------------------------------------------------------------------- #
@@ -701,6 +813,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="skip V19 (compare against the other seed); faster during template work",
     )
     gen.set_defaults(func=cmd_gen_data)
+
+    signals = subparsers.add_parser(
+        "signals", help="extract the local signal table (free, offline)"
+    )
+    signals.add_argument("--seed", type=int, default=42, help="bundle seed (default 42)")
+    signals.add_argument("--family", default=None, help="restrict to one attack family")
+    signals.add_argument("--injection", type=int, default=None, choices=[1, 3])
+    signals.add_argument("--query", default=None, help="restrict to one query id")
+    signals.add_argument("--limit", type=int, default=None, help="only the first N instances")
+    signals.add_argument("--top-n", type=int, default=None, help="override the pool size")
+    signals.add_argument("--no-write", action="store_true", help="do not write JSONL")
+    signals.set_defaults(func=cmd_signals)
 
     audit = subparsers.add_parser("audit", help="attack-validity audit (R is free, G and B cost money)")
     audit.add_argument(

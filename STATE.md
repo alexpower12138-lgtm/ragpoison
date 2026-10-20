@@ -1,8 +1,58 @@
 # STATE
 
-last_updated: 2026-10-20 16:30 (WP2 complete: all three audit stages pass)
+last_updated: 2026-10-20 18:20 (WP3 complete: local signals frozen for both seeds)
 current_phase: B
-current_wp: WP2 COMPLETE -> WP3 (retrieval + local signals)
+current_wp: WP3 COMPLETE -> WP4 (LLM-backed signals S3/S4/S5)
+
+## WP3 result (retrieval + local signals, offline, zero API cost)
+
+New modules: `retrieval/tfidf.py`, `signals/base.py` (SignalContext / SignalResult
+/ registry), `signals/s1_sim_overfit.py`, `signals/s2_cross_consistency.py`,
+`signals/s6_pseudo_ppl.py`, `signals/s7_prior.py`, `signals/calibration.py`,
+`signals/extract.py`, plus `python run.py signals`.
+
+Frozen artefacts: `results/signals/seed{42,43}/<family>_inj<n>.jsonl`,
+12 files per seed, 18000 rows per seed (1200 instances x 15 candidates), 7.1 MB
+per seed (git-ignored, rebuilt in about 70 s).
+
+Calibration (calibration split only, benign pools only):
+s2 mu=0.330 sigma=0.107 over 30 pools; s6 median NLL=1.648, MAD=0.042.
+Cached at `cache/calibration_seed{N}.json`.
+
+### What each signal actually does (mean score by label, seed 42)
+
+| signal | clean | distractor | ATK1 | ATK2 | ATK3 | ATK4 | ATK5 | ATK6 |
+|---|---|---|---|---|---|---|---|---|
+| s1 | 0.09-0.18 | 0.035 | 0.95-0.97 | 0.75-0.77 | 0.72-0.79 | 0.96-0.97 | 0.73-0.80 | 0.75-0.77 |
+| s2 | 0.53-0.57 | 0.32-0.45 | 0.39-0.48 | 0.47-0.54 | 0.46-0.53 | **0.52-0.72** | 0.41-0.47 | 0.43-0.51 |
+| s6 | 0.20 | 0.03 | 0.43-0.46 | 0.64-0.66 | 0.50-0.60 | **0.98** | 0.30-0.31 | 0.51-0.52 |
+
+Seed 43 reproduces the same pattern within a couple of points, so signal behaviour
+is not an artefact of one corpus.
+
+Conclusions to carry into the report:
+
+- **S1 separates poison from clean on average (0.95 vs 0.12) but it is a rank
+  proxy, not a poison detector.** In an ATK6 injection=3 pool the three poisoned
+  passages sit at ranks 1, 3 and 4 and the genuine evidence at rank 2; S1 scores
+  them 0.97 / 0.85 / 0.78 / 0.95. It flags "near the top", and the genuine
+  passage is near the top as well. This is the bias the C1/C1f ablation exists to
+  quantify.
+- **S2 fires only on ATK4** (0.70 vs 0.53 clean). On every fluent family the
+  poisoned passage is *more* similar to the pool than the clean passages, so S2
+  scores it lower: in-topic manipulation is invisible to a topical-outlier measure.
+- **S6 behaves as predicted**: ATK4 0.98 (destroyed word order), ATK5 0.30
+  (fluent assertion, weakest), others 0.43-0.66.
+- **Distractors are the least suspicious class on every signal** (0.03 s6, 0.32
+  s2), which confirms the earlier finding that the effective negative class is
+  "clean passages about other facts", not the donor-entity distractors.
+- S6 is computed for every row even though the configuration disables it: it costs
+  nothing offline and the ablation needs it.
+
+## Next action (exact command for human)
+
+Nothing yet: WP4 (S3/S4/S5) is the first stage that needs the API, and it will
+follow after the plan for it is written. Say `start WP4` when ready.
 
 ## WP2 final result (all numbers measured, not mock)
 
