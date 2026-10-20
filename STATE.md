@@ -1,8 +1,60 @@
 # STATE
 
-last_updated: 2026-10-20 19:40 (seed 43 audited: two independent knowledge bases agree)
+last_updated: 2026-10-20 21:30 (WP4 code complete, verified offline with the mock)
 current_phase: B
-current_wp: WP3 COMPLETE, WP2 audited on both seeds -> WP4 (S3/S4/S5)
+current_wp: WP4 COMPLETE (code) -> human smoke test -> WP5 pilot
+
+## WP4: LLM-backed signals
+
+New modules: `llm/parse.py` (strict JSON recovery), `signals/s3_freq_density.py`,
+`signals/s3b_majority.py`, `signals/llm_extract.py` (orchestration), and S3/S4/S5
+prompts in `llm/prompts.py`. Command: `python run.py signals --stage llm`.
+
+Two tables, joined on `(corpus_id, query_id, doc_id)` in WP6:
+
+| table | content | cost |
+|---|---|---|
+| `{family}_inj{n}.jsonl` | S1/S2/S6/S7 (WP3) | free, rebuildable in 70 s |
+| `{family}_inj{n}.llm.jsonl` | S3, S3b, S4, S5 + the extracted answer | paid, written once |
+
+Deliberate cost controls:
+
+- S4 depends only on passage text, so it is issued once per distinct passage per
+  process. A full 1200-instance run needs **30833 requests of which only 2033 are
+  S4**: without the dedupe it would be 46800.
+- S5's instruction view reuses S4, so the four views cost three calls per batch.
+- S3's raw density `s3_c` is stored rather than the normalised score, so `c_ref`
+  can be taken from the calibration split at fusion time. A run that does not cover
+  the calibration split falls back to all clean rows and says so
+  (`c_ref_source=all_clean_fallback`).
+- S3b (naive majority vote) is computed from the same extractions, so the negative
+  control C3b costs nothing.
+
+Verified offline with the mock transport: one instance gives 39 requests
+(15 S3 + 15 S4 + 9 S5), the single-instance table renders, the full matrix gives
+1200 instances / 30833 requests / 2033 distinct S4 passages in 124 s, and the
+JSON parsers pass fenced, prose-wrapped and malformed inputs (selftest 15/15).
+
+Deviations recorded:
+
+- The first S5 view is phrased as "asserts an answer without support" instead of
+  the plan's "relevance": a relevance flag fires on distractors, which is the
+  opposite of useful. The configuration key keeps its original name.
+- Missing ids in an S5 array are treated as not-flagged and counted in the
+  parse-failure tally rather than triggering a re-ask; the real run will show
+  whether that is acceptable.
+
+## Next action (exact command for human)
+
+Smoke test with the real key (a few cents, 1-2 minutes):
+
+```
+python run.py signals --stage llm --seed 42 --limit 3
+```
+
+Then report the parse-failure lines. Expected: `parse failures: S3 0/45`,
+`S4 0/..`, `S5 batches 0/27`, and an `S3 UNKNOWN answers` rate that is not
+near 100%.
 
 ## WP2 on seed 43: the cross-knowledge-base replication result (I5)
 
