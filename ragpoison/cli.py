@@ -353,6 +353,25 @@ def cmd_selftest(args: argparse.Namespace) -> int:
             raise RuntimeError("S6 does not prefer the fluent passage")
         return f"4 signals registered, S6 separates gibberish ({gibberish:.2f} > {fluent:.2f})"
 
+    def check_json_parsing() -> str:
+        from .llm.parse import parse_answer, parse_flags, parse_score
+
+        if parse_answer('{"answer": "1871", "confidence": 0.8}') != ("1871", 0.8):
+            raise RuntimeError("plain answer JSON not parsed")
+        fenced = parse_answer('```json\n{"answer": "Ilvar Basin"}\n```')
+        if not fenced or fenced[0] != "Ilvar Basin":
+            raise RuntimeError("fenced answer JSON not parsed")
+        if parse_answer("no json here at all") is not None:
+            raise RuntimeError("garbage was accepted as an answer")
+        if parse_score('{"score": 1, "category": "question_echo"}') != (1.0, "question_echo"):
+            raise RuntimeError("score JSON not parsed")
+        if parse_score('{"score": 1.7, "category": "x"}') is not None:
+            raise RuntimeError("out-of-range score was accepted")
+        flags = parse_flags('[{"id": 1, "flag": 1}, {"id": 2, "flag": 0}]', [1, 2, 3])
+        if flags != {1: 1, 2: 0}:
+            raise RuntimeError(f"array JSON not parsed: {flags}")
+        return "fenced, prose and malformed outputs handled"
+
     def check_calibration() -> str:
         from .signals.calibration import compute as compute_calibration, calibration_path
 
@@ -370,6 +389,7 @@ def cmd_selftest(args: argparse.Namespace) -> int:
     checks += [
         ("config: default.yaml loads and validates", check_default_config),
         ("signals: registry and S6 sanity", check_signals),
+        ("signals: JSON parsing of model output", check_json_parsing),
         ("signals: calibration statistics", check_calibration),
         ("config: experiment configs load", check_all_configs),
         ("config: ablation matrix is complete", check_ablation_matrix),
@@ -507,6 +527,105 @@ def cmd_spend(args: argparse.Namespace) -> int:
 
 
 def cmd_signals(args: argparse.Namespace) -> int:
+    if args.stage in {"llm", "all"}:
+        return _cmd_llm_signals(args)
+    return _cmd_local_signals(args)
+
+
+def _cmd_llm_signals(args: argparse.Namespace) -> int:
+    from .llm.client import BudgetExceeded
+    from .signals.llm_extract import extract_llm
+
+    try:
+        payload = extract_llm(
+            seed=args.seed,
+            family=args.family,
+            injection=args.injection,
+            query_id=args.query,
+            limit=args.limit,
+            top_n=args.top_n,
+            mock=args.mock,
+            concurrency=args.concurrency,
+            budget_cny=args.budget_cny,
+            write=not args.no_write,
+        )
+    except BudgetExceeded as exc:
+        print(f"BUDGET STOP: {exc}")
+        return EXIT_FAILED
+
+    parse = payload["parse"]
+    print()
+    print(
+        f"instances {payload['instances']}, rows {payload['rows']}, "
+        f"requests {payload['requests']}, distinct S4 passages {payload['distinct_s4_passages']}"
+    )
+    print(
+        f"parse failures: S3 {parse['s3_fail']}/{parse['s3_total']} "
+        f"({payload['s3_parse_fail_rate']:.1%}), "
+        f"S4 {parse['s4_fail']}/{payload['distinct_s4_passages']} "
+        f"({payload['s4_parse_fail_rate']:.1%}), "
+        f"S5 batches {parse['s5_fail']}/{payload['s5_batches']}"
+    )
+    print(
+        f"S3 UNKNOWN answers: {payload['s3_unknown_rate']:.1%}   "
+        f"density reference c_ref={payload['c_ref']:.4f} ({payload['c_ref_source']})"
+    )
+    llm = payload["llm"]
+    print(
+        f"calls {llm['calls']}, cache hits {llm['cache_hits']}, failures {llm['failures']}, "
+        f"tokens {llm['prompt_tokens']} in / {llm['completion_tokens']} out"
+    )
+    for name in payload["files"]:
+        print(f"wrote {name}")
+    print(f"wrote {payload['snapshot']}")
+    print()
+
+    if args.limit is not None or args.family or args.injection or args.query:
+        print(
+            "PARTIAL RUN: the files above cover only the selected subset. "
+            "A full run overwrites them."
+        )
+        print()
+
+    if payload["instances"] == 1:
+        rows = payload["rows_data"]
+        header = (
+            f"{'rk':>3} {'doc':<22}{'s3_c':>8}{'s3':>7}{'s3b':>7}{'s4':>6}{'s5':>7}"
+            f"  {'answer':<20}{'label':<18}"
+        )
+        print(header)
+        print("-" * len(header))
+        for row in rows:
+            print(
+                f"{row['rank']:>3} {row['doc_id']:<22}{row['s3_c']:>8.4f}{row['s3']:>7.3f}"
+                f"{row['s3b']:>7.3f}{row['s4']:>6.2f}{row['s5']:>7.3f}"
+                f"  {str(row['answer'])[:20]:<20}{row['label_class']:<18}"
+            )
+        return EXIT_OK
+
+    print(
+        f"{'family':<26}{'inj':>4} {'label':<18}{'n':>7}{'s3':>8}{'s3b':>8}{'s4':>7}{'s5':>7}"
+    )
+    print("-" * 85)
+    buckets: dict[tuple, list[dict]] = {}
+    for row in payload["rows_data"]:
+        key = (row["attack_family"], row["injection"], row["label_class"])
+        buckets.setdefault(key, []).append(row)
+    for (family, injection, label_class), subset in sorted(buckets.items()):
+        n = len(subset)
+        means = {
+            name: sum(row[name] for row in subset) / n for name in ("s3", "s3b", "s4", "s5")
+        }
+        print(
+            f"{family:<26}{injection:>4} {label_class:<18}{n:>7}"
+            f"{means['s3']:>8.3f}{means['s3b']:>8.3f}{means['s4']:>7.3f}{means['s5']:>7.3f}"
+        )
+    print()
+    print("mean LLM signal value by label (higher = more suspicious)")
+    return EXIT_OK
+
+
+def _cmd_local_signals(args: argparse.Namespace) -> int:
     from .signals.extract import LOCAL_SIGNALS, extract, separability
 
     result = extract(
@@ -824,6 +943,15 @@ def build_parser() -> argparse.ArgumentParser:
     signals.add_argument("--limit", type=int, default=None, help="only the first N instances")
     signals.add_argument("--top-n", type=int, default=None, help="override the pool size")
     signals.add_argument("--no-write", action="store_true", help="do not write JSONL")
+    signals.add_argument(
+        "--stage",
+        default="local",
+        choices=["local", "llm", "all"],
+        help="local (free) | llm (S3/S4/S5, costs money) | all",
+    )
+    signals.add_argument("--mock", action="store_true", help="no network: plumbing test only")
+    signals.add_argument("--budget-cny", type=float, default=None, help="override the spend cap")
+    signals.add_argument("--concurrency", type=int, default=None, help="override parallel requests")
     signals.set_defaults(func=cmd_signals)
 
     audit = subparsers.add_parser("audit", help="attack-validity audit (R is free, G and B cost money)")
