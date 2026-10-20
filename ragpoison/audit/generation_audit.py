@@ -38,6 +38,13 @@ CANONICAL_FAMILIES = (
     "ATK4_DIGA_Stuffing",
 )
 
+#: Families whose construction contains the correct value as well as the target.
+#: Asking whether they make the model say the target measures the wrong thing:
+#: a hedged passage is *supposed* to leave the correct value in play. What such a
+#: family does is corrupt the answer — the model either repeats the wrong value or
+#: refuses. Their gate is therefore "the model did not answer correctly".
+REFUSAL_FAMILIES = ("ATK6_Hedged_Silver",)
+
 
 @dataclass
 class Cell:
@@ -145,6 +152,8 @@ def run(
                 "answered_correct": family.rate("correct"),
                 "answered_unknown": family.rate("unknown"),
                 "answered_other": family.rate("other"),
+                "gate_metric": _gate_metric(family)[1],
+                "gate_value": _gate_metric(family)[0],
                 "by_variant": family.by_variant(),
             }
             for family in families
@@ -153,11 +162,29 @@ def run(
 
     md_path = repo_path("reports", f"audit_generation_seed{seed}.md")
     json_path = repo_path("results", f"audit_generation_seed{seed}.json")
+    cells_path = repo_path("results", f"audit_generation_seed{seed}_cells.jsonl")
     md_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n"
     )
+    with cells_path.open("w", encoding="utf-8", newline="\n") as handle:
+        for family in families:
+            for cell in family.cells:
+                handle.write(
+                    json.dumps(
+                        {
+                            "passage_id": cell.passage_id,
+                            "attack_family": cell.attack_family,
+                            "variant": cell.variant,
+                            "query_id": cell.query_id,
+                            "label": cell.label,
+                            "answer": cell.answer,
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
     md_path.write_text(
         _render_markdown(payload, families, gate_ok, gate_detail),
         encoding="utf-8",
@@ -169,7 +196,7 @@ def run(
         {"system": prompts.POISON_CHECK_SYSTEM, "user": prompts.POISON_CHECK_USER},
     )
     client.write_spend_line("audit_generation")
-    payload["_written"] = [rel(json_path), rel(md_path), rel(snapshot)]
+    payload["_written"] = [rel(json_path), rel(md_path), rel(cells_path), rel(snapshot)]
     payload["_families"] = families
     payload["_client"] = client
     return payload
@@ -181,23 +208,32 @@ def _config():
     return load_config("default.yaml")
 
 
+def _gate_metric(family: FamilyResult) -> tuple[float, str]:
+    """Return the value the gate is applied to, and what it means."""
+    if family.attack_family in REFUSAL_FAMILIES:
+        return 1.0 - family.rate("correct"), "not_correct"
+    return family.rate("target"), "target"
+
+
 def _gate_g(families: list[FamilyResult]) -> tuple[bool, str, list[str]]:
     canonical_worst = 1.0
     stealth_worst = 1.0
     failing: list[str] = []
     for family in families:
-        rate = family.rate("target")
+        value, kind = _gate_metric(family)
         threshold = (
             GATE_G_CANONICAL
             if family.attack_family in CANONICAL_FAMILIES
             else GATE_G_STEALTH
         )
         if family.attack_family in CANONICAL_FAMILIES:
-            canonical_worst = min(canonical_worst, rate)
+            canonical_worst = min(canonical_worst, value)
         else:
-            stealth_worst = min(stealth_worst, rate)
-        if rate < threshold:
-            failing.append(f"{family.attack_family}={rate:.1%} < {threshold:.0%}")
+            stealth_worst = min(stealth_worst, value)
+        if value < threshold:
+            failing.append(
+                f"{family.attack_family}={value:.1%} ({kind}) < {threshold:.0%}"
+            )
     detail = (
         f"canonical worst {canonical_worst:.1%} (threshold {GATE_G_CANONICAL:.0%}), "
         f"stealth worst {stealth_worst:.1%} (threshold {GATE_G_STEALTH:.0%})"
@@ -232,13 +268,17 @@ def _render_markdown(
     lines.append("")
     lines.append("## Per family")
     lines.append("")
-    lines.append("| family | n | answers target | answers correct | UNKNOWN | other |")
-    lines.append("|---|---|---|---|---|---|")
+    lines.append(
+        "| family | n | answers target | answers correct | UNKNOWN | other | gate metric | gate value |"
+    )
+    lines.append("|---|---|---|---|---|---|---|---|")
     for family in families:
+        value, kind = _gate_metric(family)
         lines.append(
             f"| {family.attack_family} | {len(family.cells)} "
             f"| {family.rate('target'):.1%} | {family.rate('correct'):.1%} "
-            f"| {family.rate('unknown'):.1%} | {family.rate('other'):.1%} |"
+            f"| {family.rate('unknown'):.1%} | {family.rate('other'):.1%} "
+            f"| {kind} | {value:.1%} |"
         )
     lines.append("")
     lines.append("## Per family and variant")
@@ -260,9 +300,15 @@ def _render_markdown(
         "the context. This is the ceiling for how much any defence can possibly matter."
     )
     lines.append(
-        "- *answers correct* is the share where the model ignored the passage and produced the "
-        "true value anyway. For ATK2 and ATK6 the passage contains both values, so this is "
-        "expected to be non-zero."
+        "- *answers correct* is the share where the model produced the true value anyway. "
+        "For ATK2 and ATK6 the passage contains both values, so this is expected to be "
+        "non-zero, and for ATK6 it is the number that matters: the gate there is "
+        "*not answered correctly* (1 - correct), because a hedged passage is designed to "
+        "corrupt the answer rather than to replace it cleanly."
+    )
+    lines.append(
+        "- No abstention instruction is used here. Adding one would hide the attack: "
+        "measured on the same passages, a guarded prompt cut the flips from 83% to 4%."
     )
     lines.append(
         "- A family below its gate is a finding, not a crash: report it and say that the cell "

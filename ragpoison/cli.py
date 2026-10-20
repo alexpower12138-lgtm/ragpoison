@@ -379,7 +379,7 @@ def _scan_for_secrets() -> list[str]:
 
 
 def cmd_audit(args: argparse.Namespace) -> int:
-    from .audit import baseline_audit, generation_audit, retrieval_audit
+    from .audit import baseline_audit, control_audit, generation_audit, retrieval_audit
     from .llm.client import BudgetExceeded
 
     stage = args.stage
@@ -390,6 +390,19 @@ def cmd_audit(args: argparse.Namespace) -> int:
             print(retrieval_audit.summarize(payload))
             print()
             if not payload["gate_r"]["passed"]:
+                exit_code = EXIT_FAILED
+
+        if stage in {"controls", "all"}:
+            payload = control_audit.run(
+                seed=args.seed,
+                limit=args.limit,
+                mock=args.mock,
+                budget_cny=args.budget_cny,
+                concurrency=args.concurrency,
+            )
+            print(control_audit.summarize(payload))
+            print()
+            if not payload["validity_ok"]:
                 exit_code = EXIT_FAILED
 
         if stage in {"generation", "all"}:
@@ -693,8 +706,11 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument(
         "--stage",
         default="retrieval",
-        choices=["retrieval", "generation", "baseline", "all"],
-        help="retrieval (free) | generation (Gate G) | baseline (undefended ASR) | all",
+        choices=["retrieval", "controls", "generation", "baseline", "all"],
+        help=(
+            "retrieval (free) | controls (clean + no-context checks) | generation (Gate G) "
+            "| baseline (undefended ASR, both prompts) | all"
+        ),
     )
     audit.add_argument("--seed", type=int, default=42, help="bundle seed (default 42)")
     audit.add_argument("--top-n", type=int, default=None, help="override the detection pool size")

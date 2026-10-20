@@ -115,7 +115,9 @@ class LLMClient:
             "cache", "llm_mock" if mock else "llm"
         )
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.log_path = repo_path("logs", "llm_calls.jsonl")
+        # Mock and real traffic are logged to different files: a mock run must
+        # never be mistaken for paid work in the spend record.
+        self.log_path = repo_path("logs", "llm_calls_mock.jsonl" if mock else "llm_calls.jsonl")
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
 
         self._lock = threading.Lock()
@@ -369,19 +371,23 @@ class LLMClient:
         }
 
     def write_spend_line(self, stage: str) -> Path:
-        """Append one line to ``reports/SPEND.md`` so the human can watch the budget."""
+        """Append one line of actual usage to ``reports/SPEND.md``.
+
+        Only counts are recorded. The authoritative cost figure is the balance
+        delta the human can read with `python run.py spend`; guessing prices into
+        a file would just add a number nobody should trust.
+        """
         target = repo_path("reports", "SPEND.md")
         target.parent.mkdir(parents=True, exist_ok=True)
         summary = self.summary()
         line = (
             f"| {stage} | {summary['calls']} | {summary['cache_hits']} | "
-            f"{summary['prompt_tokens']} | {summary['completion_tokens']} | "
-            f"{summary['spent_cny']:.2f} / {summary['budget_cny']:.2f} |"
+            f"{summary['prompt_tokens']} | {summary['completion_tokens']} |"
         )
         if not target.exists():
             target.write_text(
-                "| stage | api_calls | cache_hits | prompt_tokens | completion_tokens | "
-                "spent_cny / cap |\n|---|---|---|---|---|---|\n",
+                "| stage | api_calls | cache_hits | prompt_tokens | completion_tokens |\n"
+                "|---|---|---|---|---|\n",
                 encoding="utf-8",
                 newline="\n",
             )

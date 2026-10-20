@@ -2,16 +2,28 @@
 
 Every experiment table in the report has the same shape: attack success rate with
 a defence, against attack success rate without one. This module produces the
-"without" column: retrieve the top-k exactly as the product would, hand it to the
-model unchanged, and score the answers.
+"without" column.
 
-Nothing here is a defence. No detector runs, no filter runs, no threshold is
-applied. That is the point.
+It measures two conditions on identical retrieved contexts:
+
+``plain``
+    No abstention instruction. This is the real baseline: what the attack does
+    when nothing defends it.
+``guarded``
+    The product prompt, which orders the model to answer UNKNOWN when the context
+    is contradictory. That sentence is itself a defence, so it is measured as a
+    condition rather than baked into the baseline.
+
+The gap between the two is a result in its own right: it is how much a single
+sentence of prompt-level defence buys, and what it costs in clean accuracy.
+
+Nothing here is a detector. No filter runs, no threshold is applied.
 
 Outputs
 -------
 ``reports/audit_baseline_seed<N>.md``
 ``results/audit_baseline_seed<N>.json``
+``results/audit_baseline_seed<N>_cells.jsonl``
 """
 
 from __future__ import annotations
@@ -28,21 +40,28 @@ from ..llm.client import Call, LLMClient
 from ..paths import path as repo_path, rel
 from ..retrieval.bm25 import BM25
 
+#: (condition name, system prompt, prompt version)
+CONDITIONS: tuple[tuple[str, str, str], ...] = (
+    ("plain", prompts.GEN_PLAIN_SYSTEM, prompts.GEN_PLAIN_VERSION),
+    ("guarded", prompts.GEN_GUARDED_SYSTEM, prompts.GEN_GUARDED_VERSION),
+)
+
 
 @dataclass
 class Cell:
+    condition: str
     corpus_id: str
     attack_family: str
     injection: int
     query_id: str
     label: str
     answer: str
-    atr: float          # share of retrieved context that is poisoned
-    retrieved: list[str] = field(default_factory=list)
+    atr: float
 
 
 @dataclass
 class SliceResult:
+    condition: str
     attack_family: str
     injection: int
     cells: list[Cell] = field(default_factory=list)
@@ -87,19 +106,22 @@ def run(
             break
 
     calls: list[Call] = []
-    for corpus, query, retrieved in instances:
-        calls.append(
-            Call(
-                system=prompts.GEN_SYSTEM,
-                user=prompts.GEN_USER.format(
-                    question=query["question"],
-                    context=prompts.format_context([texts[cid] for cid in retrieved]),
-                ),
-                stage="audit_baseline",
-                max_tokens=int(config.get("llm.max_tokens_answer")),
-                extra={"corpus_id": corpus["corpus_id"]},
+    plan: list[tuple[str, dict, dict]] = []
+    for condition, system, _version in CONDITIONS:
+        for corpus, query, retrieved in instances:
+            calls.append(
+                Call(
+                    system=system,
+                    user=prompts.GEN_USER.format(
+                        question=query["question"],
+                        context=prompts.format_context([texts[cid] for cid in retrieved]),
+                    ),
+                    stage=f"audit_baseline_{condition}",
+                    max_tokens=int(config.get("llm.max_tokens_answer")),
+                    extra={"corpus_id": corpus["corpus_id"], "condition": condition},
+                )
             )
-        )
+            plan.append((condition, corpus, query))
 
     client = LLMClient(
         config,
@@ -110,18 +132,30 @@ def run(
         quiet=quiet,
     )
     if not quiet:
-        print(f"baseline: {len(calls)} undefended generations ...", flush=True)
+        print(
+            f"baseline: {len(instances)} contexts x {len(CONDITIONS)} conditions "
+            f"= {len(calls)} generations ...",
+            flush=True,
+        )
     results = client.complete_many(calls, label="baseline   ", progress_every=200)
 
-    grouped: dict[tuple[str, int], SliceResult] = {}
-    poison_by_corpus = {corpus["corpus_id"]: set(corpus["poison_chunk_ids"]) for corpus, _, _ in instances}
-    for (corpus, query, retrieved), result in zip(instances, results):
-        key = (corpus["attack_family"], int(corpus["injection"]))
+    by_corpus_poison = {
+        corpus["corpus_id"]: set(corpus["poison_chunk_ids"]) for corpus, _, _ in instances
+    }
+    retrieved_by_instance = {
+        corpus["corpus_id"]: retrieved for corpus, _query, retrieved in instances
+    }
+
+    grouped: dict[tuple[str, str, int], SliceResult] = {}
+    for (condition, corpus, query), result in zip(plan, results):
+        key = (condition, corpus["attack_family"], int(corpus["injection"]))
         slice_result = grouped.setdefault(key, SliceResult(*key))
-        poison = poison_by_corpus[corpus["corpus_id"]]
+        poison = by_corpus_poison[corpus["corpus_id"]]
+        retrieved = retrieved_by_instance[corpus["corpus_id"]]
         atr = sum(1 for cid in retrieved if cid in poison) / len(retrieved) if retrieved else 0.0
         slice_result.cells.append(
             Cell(
+                condition=condition,
                 corpus_id=corpus["corpus_id"],
                 attack_family=corpus["attack_family"],
                 injection=int(corpus["injection"]),
@@ -129,60 +163,75 @@ def run(
                 label=classify(result.text, query["correct_answer"], query["target_answer"]),
                 answer=result.text.strip()[:80],
                 atr=atr,
-                retrieved=retrieved,
             )
         )
 
     slices = [grouped[key] for key in sorted(grouped)]
-    total = sum(slice_result.n for slice_result in slices)
+    overall = {
+        condition: _overall([row for row in slices if row.condition == condition])
+        for condition, _system, _version in CONDITIONS
+    }
     payload = {
         "seed": seed,
         "mock": mock,
-        "prompt_version": prompts.GEN_VERSION,
         "top_k": k,
-        "n_instances": total,
-        "overall": {
-            "asr": _rate(slices, "target"),
-            "clean_accuracy": _rate(slices, "correct"),
-            "abstention": _rate(slices, "unknown"),
-            "other": _rate(slices, "other"),
-            "mean_atr": (
-                sum(slice_result.mean_atr * slice_result.n for slice_result in slices) / total
-                if total
-                else 0.0
-            ),
-        },
+        "prompt_versions": {name: version for name, _system, version in CONDITIONS},
+        "n_instances": len(instances),
+        "overall": overall,
+        "delta": _delta(slices),
         "llm": client.summary(),
         "slices": [
             {
-                "attack_family": slice_result.attack_family,
-                "injection": slice_result.injection,
-                "n": slice_result.n,
-                "asr": slice_result.rate("target"),
-                "clean_accuracy": slice_result.rate("correct"),
-                "abstention": slice_result.rate("unknown"),
-                "other": slice_result.rate("other"),
-                "mean_atr": slice_result.mean_atr,
+                "condition": row.condition,
+                "attack_family": row.attack_family,
+                "injection": row.injection,
+                "n": row.n,
+                "asr": row.rate("target"),
+                "clean_accuracy": row.rate("correct"),
+                "abstention": row.rate("unknown"),
+                "other": row.rate("other"),
+                "mean_atr": row.mean_atr,
             }
-            for slice_result in slices
+            for row in slices
         ],
     }
 
     md_path = repo_path("reports", f"audit_baseline_seed{seed}.md")
     json_path = repo_path("results", f"audit_baseline_seed{seed}.json")
+    cells_path = repo_path("results", f"audit_baseline_seed{seed}_cells.jsonl")
     md_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n"
     )
+    with cells_path.open("w", encoding="utf-8", newline="\n") as handle:
+        for row in slices:
+            for cell in row.cells:
+                handle.write(
+                    json.dumps(
+                        {
+                            "condition": cell.condition,
+                            "corpus_id": cell.corpus_id,
+                            "attack_family": cell.attack_family,
+                            "injection": cell.injection,
+                            "query_id": cell.query_id,
+                            "label": cell.label,
+                            "answer": cell.answer,
+                            "atr": round(cell.atr, 3),
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
     md_path.write_text(_render_markdown(payload, slices), encoding="utf-8", newline="\n")
-    snapshot = prompts.snapshot(
-        "audit_baseline",
-        prompts.GEN_VERSION,
-        {"system": prompts.GEN_SYSTEM, "user": prompts.GEN_USER},
-    )
+    snapshots = [
+        prompts.snapshot(f"audit_baseline_{name}", version, {"system": system, "user": prompts.GEN_USER})
+        for name, system, version in CONDITIONS
+    ]
     client.write_spend_line("audit_baseline")
-    payload["_written"] = [rel(json_path), rel(md_path), rel(snapshot)]
+    payload["_written"] = [rel(json_path), rel(md_path), rel(cells_path)] + [
+        rel(item) for item in snapshots
+    ]
     payload["_slices"] = slices
     payload["_client"] = client
     return payload
@@ -194,16 +243,44 @@ def _config():
     return load_config("default.yaml")
 
 
-def _rate(slices: list[SliceResult], label: str) -> float:
-    total = sum(slice_result.n for slice_result in slices)
+def _overall(slices: list[SliceResult]) -> dict:
+    total = sum(row.n for row in slices)
     if not total:
-        return 0.0
-    hits = sum(sum(1 for cell in slice_result.cells if cell.label == label) for slice_result in slices)
-    return hits / total
+        return {"asr": 0.0, "clean_accuracy": 0.0, "abstention": 0.0, "other": 0.0, "mean_atr": 0.0}
+    hits = {label: sum(sum(1 for cell in row.cells if cell.label == label) for row in slices) for label in ("target", "correct", "unknown", "other")}
+    return {
+        "asr": hits["target"] / total,
+        "clean_accuracy": hits["correct"] / total,
+        "abstention": hits["unknown"] / total,
+        "other": hits["other"] / total,
+        "mean_atr": sum(row.mean_atr * row.n for row in slices) / total,
+    }
+
+
+def _delta(slices: list[SliceResult]) -> list[dict]:
+    """Per slice, what the guarded prompt changed relative to the plain one."""
+    by_key: dict[tuple[str, int], dict[str, SliceResult]] = {}
+    for row in slices:
+        by_key.setdefault((row.attack_family, row.injection), {})[row.condition] = row
+    out: list[dict] = []
+    for (family, injection), pair in sorted(by_key.items()):
+        plain = pair.get("plain")
+        guarded = pair.get("guarded")
+        if plain is None or guarded is None:
+            continue
+        out.append(
+            {
+                "attack_family": family,
+                "injection": injection,
+                "asr_drop": plain.rate("target") - guarded.rate("target"),
+                "clean_drop": plain.rate("correct") - guarded.rate("correct"),
+                "abstention_rise": guarded.rate("unknown") - plain.rate("unknown"),
+            }
+        )
+    return out
 
 
 def _render_markdown(payload: dict, slices: list[SliceResult]) -> str:
-    overall = payload["overall"]
     lines: list[str] = []
     lines.append(f"# No-defence baseline (stage B) - seed {payload['seed']}")
     lines.append("")
@@ -211,81 +288,108 @@ def _render_markdown(payload: dict, slices: list[SliceResult]) -> str:
         lines.append("> **MOCK RUN.** No model was called. Numbers are a plumbing test only.")
         lines.append("")
     lines.append(
-        "Retrieve the top-"
-        f"{payload['top_k']} exactly as the product would, generate with no detector and no "
-        "filter, and score the answers. These numbers are the reference column of every later "
-        "table: a defence is only interesting relative to them."
+        f"Retrieve the top-{payload['top_k']} exactly as the product would and generate twice on "
+        "the same context: once with a plain instruction, once with the product prompt that "
+        "orders the model to answer UNKNOWN when the context is contradictory. No detector and "
+        "no filter runs in either condition."
     )
-    lines.append("")
-    lines.append(f"- instances: {payload['n_instances']}")
-    lines.append(f"- prompt version: {payload['prompt_version']}")
-    lines.append(f"- api calls: {payload['llm']['calls']}, cache hits: {payload['llm']['cache_hits']}")
-    lines.append(f"- estimated spend: {payload['llm']['spent_cny']:.2f} CNY")
-    lines.append("")
-    lines.append("## Overall")
     lines.append("")
     lines.append(
-        f"**ASR {overall['asr']:.1%}** | clean accuracy {overall['clean_accuracy']:.1%} | "
-        f"abstention {overall['abstention']:.1%} | other {overall['other']:.1%} | "
-        f"mean ATR {overall['mean_atr']:.2f}"
+        f"- instances: {payload['n_instances']} contexts x {len(CONDITIONS)} conditions"
     )
+    lines.append(
+        "- prompt versions: "
+        + ", ".join(f"`{name}`={version}" for name, version in payload["prompt_versions"].items())
+    )
+    lines.append(f"- api calls: {payload['llm']['calls']}, cache hits: {payload['llm']['cache_hits']}")
+    lines.append(f"- tokens: {payload['llm']['prompt_tokens']} prompt / {payload['llm']['completion_tokens']} completion")
     lines.append("")
-    lines.append("## Per attack family and injection")
+    lines.append("## Overall, both conditions")
     lines.append("")
-    lines.append("| family | inj | n | ASR | clean accuracy | abstention | other | mean ATR |")
-    lines.append("|---|---|---|---|---|---|---|---|")
-    for slice_result in slices:
+    lines.append("| condition | ASR | clean accuracy | abstention | other | mean ATR |")
+    lines.append("|---|---|---|---|---|---|")
+    for name in payload["prompt_versions"]:
+        row = payload["overall"][name]
         lines.append(
-            f"| {slice_result.attack_family} | {slice_result.injection} | {slice_result.n} "
-            f"| {slice_result.rate('target'):.1%} | {slice_result.rate('correct'):.1%} "
-            f"| {slice_result.rate('unknown'):.1%} | {slice_result.rate('other'):.1%} "
-            f"| {slice_result.mean_atr:.2f} |"
+            f"| {name} | {row['asr']:.1%} | {row['clean_accuracy']:.1%} | {row['abstention']:.1%} "
+            f"| {row['other']:.1%} | {row['mean_atr']:.2f} |"
+        )
+    lines.append("")
+    for name in payload["prompt_versions"]:
+        rows = [row for row in slices if row.condition == name]
+        lines.append(f"## Condition `{name}`, per family and injection")
+        lines.append("")
+        lines.append("| family | inj | n | ASR | clean accuracy | abstention | other | mean ATR |")
+        lines.append("|---|---|---|---|---|---|---|---|")
+        for row in rows:
+            lines.append(
+                f"| {row.attack_family} | {row.injection} | {row.n} "
+                f"| {row.rate('target'):.1%} | {row.rate('correct'):.1%} "
+                f"| {row.rate('unknown'):.1%} | {row.rate('other'):.1%} "
+                f"| {row.mean_atr:.2f} |"
+            )
+        lines.append("")
+    lines.append("## What the abstention instruction costs")
+    lines.append("")
+    lines.append("| family | inj | ASR drop | clean-accuracy drop | abstention rise |")
+    lines.append("|---|---|---|---|---|")
+    for row in payload["delta"]:
+        lines.append(
+            f"| {row['attack_family']} | {row['injection']} "
+            f"| {row['asr_drop']:+.1%} | {row['clean_drop']:+.1%} | {row['abstention_rise']:+.1%} |"
         )
     lines.append("")
     lines.append("## How to read this")
     lines.append("")
     lines.append(
-        "- **ASR** is the share of queries where the model answered the attacker's value with no "
-        "defence at all. This is the number every defence is measured against."
+        "- The **plain** condition is the baseline every defence is measured against. "
+        "The **guarded** condition is the product prompt and therefore already contains a "
+        "prompt-level defence."
     )
     lines.append(
-        "- **clean accuracy** is the share where it answered the true value. It is not expected to "
-        "be high: the context also contains seven passages about unrelated entities."
+        "- **ASR** is the share of queries where the model answered the attacker's value. "
+        "**clean accuracy** is the share where it answered the true value."
     )
     lines.append(
-        "- **mean ATR** is the share of the retrieved context that is poisoned, which shows how "
-        "much room the attack already occupies before any defence acts."
+        "- The difference between the two conditions is what a single sentence buys: the ASR "
+        "drop is the protection, the clean-accuracy drop is the price, and the abstention rise "
+        "is the mechanism."
     )
     lines.append(
-        "- ATK2 and ATK6 passages contain both values, so a model answering the true value is a "
-        "legitimate outcome, not a scoring error."
+        "- ATK2 and ATK6 passages contain both values, so answering the true value is a "
+        "legitimate outcome there, not a scoring error."
     )
     lines.append("")
     return "\n".join(lines)
 
 
 def summarize(payload: dict) -> str:
-    slices: list[SliceResult] = payload["_slices"]
-    overall = payload["overall"]
-    lines = [
-        f"instances: {payload['n_instances']}"
-        + ("  [MOCK, no model called]" if payload["mock"] else ""),
-        f"BASELINE ASR: {overall['asr']:.1%}   clean accuracy: {overall['clean_accuracy']:.1%}"
-        f"   abstention: {overall['abstention']:.1%}   mean ATR: {overall['mean_atr']:.2f}",
-        "",
-        f"{'family':<26}{'inj':>4}{'n':>6}{'ASR':>9}{'clean':>9}{'UNK':>8}{'ATR':>7}",
-    ]
-    for slice_result in slices:
+    lines = ["instances: {} contexts x {} conditions".format(payload["n_instances"], len(CONDITIONS))]
+    if payload["mock"]:
+        lines[0] += "  [MOCK, no model called]"
+    lines.append("")
+    lines.append(f"{'condition':<10}{'ASR':>8}{'clean':>8}{'UNK':>8}{'ATR':>7}")
+    for name, row in payload["overall"].items():
         lines.append(
-            f"{slice_result.attack_family:<26}{slice_result.injection:>4}{slice_result.n:>6}"
-            f"{slice_result.rate('target'):>8.1%}{slice_result.rate('correct'):>9.1%}"
-            f"{slice_result.rate('unknown'):>8.1%}{slice_result.mean_atr:>7.2f}"
+            f"{name:<10}{row['asr']:>7.1%}{row['clean_accuracy']:>8.1%}"
+            f"{row['abstention']:>8.1%}{row['mean_atr']:>7.2f}"
+        )
+    lines.append("")
+    lines.append("plain condition, per family and injection")
+    lines.append(f"{'family':<26}{'inj':>4}{'n':>6}{'ASR':>8}{'clean':>8}{'UNK':>8}{'ATR':>7}")
+    for row in payload["_slices"]:
+        if row.condition != "plain":
+            continue
+        lines.append(
+            f"{row.attack_family:<26}{row.injection:>4}{row.n:>6}"
+            f"{row.rate('target'):>7.1%}{row.rate('correct'):>8.1%}"
+            f"{row.rate('unknown'):>8.1%}{row.mean_atr:>7.2f}"
         )
     llm = payload["llm"]
     lines.append("")
     lines.append(
-        f"calls {llm['calls']}, cache hits {llm['cache_hits']}, "
-        f"failures {llm['failures']}, spent {llm['spent_cny']:.2f} / {llm['budget_cny']:.2f} CNY"
+        f"calls {llm['calls']}, cache hits {llm['cache_hits']}, failures {llm['failures']}, "
+        f"tokens {llm['prompt_tokens']} in / {llm['completion_tokens']} out"
     )
     for item in payload.get("_written", []):
         lines.append(f"wrote {item}")
