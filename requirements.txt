@@ -1,0 +1,26 @@
+# RAG Poisoning Detection -- Python dependencies
+# Install:   python -m pip install -r requirements.txt
+# Slow network, use the mirror instead:
+#            python -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+# Tested on Windows 11 + CPython 3.13.1 + pip 24.3.1.
+
+# --- core: retrieval, data handling, statistics ---
+numpy>=1.26
+pandas>=2.0
+scikit-learn>=1.3
+scipy>=1.11
+PyYAML>=6.0
+requests>=2.31
+
+# --- plotting (report figures) ---
+matplotlib>=3.8
+
+# --- frontend (MANDATORY: Streamlit is the only supported UI, decision D20) ---
+# >=1.28 is required for streamlit.testing.v1.AppTest (headless self-check);
+# >=1.40 is recommended for full Python 3.13 support.
+streamlit>=1.40
+
+# --- optional developer tools (the pipeline runs without them) ---
+# pytest>=8.0
+#   Not required: all self-checks also run via `python run.py selftest`.
+#   Streamlit's AppTest ships inside streamlit itself; nothing extra to install.

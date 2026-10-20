@@ -1,0 +1,11 @@
+# R2 main experiment: all 100 queries, 6 attack families, both injection sizes,
+# seed 42. Expected cost: about 90 CNY. Expected wall clock: 5-7 hours.
+# Interrupting is safe; re-running resumes from the per-instance cache.
+
+experiment:
+  seeds: [42]
+  injection_counts: [1, 3]
+  max_instances: 0
+
+runtime:
+  budget_cny: 110

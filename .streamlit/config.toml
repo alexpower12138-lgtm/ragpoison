@@ -1,0 +1,16 @@
+# Streamlit configuration for the offline-friendly dashboard.
+# Telemetry is disabled: this project must run on a machine without internet.
+# Docs: https://docs.streamlit.io/develop/api-reference/configuration/config.toml
+
+[browser]
+gatherUsageStats = false
+
+[server]
+headless = false
+runOnSave = true
+
+[client]
+showErrorDetails = true
+
+[theme]
+base = "light"

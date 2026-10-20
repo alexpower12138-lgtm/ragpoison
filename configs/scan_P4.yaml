@@ -1,0 +1,9 @@
+# P4 -- incremental: only chunks in the dirty set (new or changed content) are
+# scanned. Models the steady state of a corpus that receives occasional writes.
+
+scan:
+  strategy: incremental
+  batch_size: 10
+  coarse_threshold: 0.0
+  shard_count: 1
+  budget_tokens_per_scan: 50000

@@ -1,0 +1,25 @@
+# Repository-wide line-ending policy.
+# Everything is stored with LF so that the repository is byte-identical no matter
+# which operating system checks it out. This overrides core.autocrlf.
+#
+# Rationale: this project reports SHA-256 hashes of generated artefacts, so a
+# silent CRLF conversion would break reproducibility.
+
+* text=auto eol=lf
+
+# Explicit text files
+*.py    text eol=lf
+*.md    text eol=lf
+*.toml  text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.txt   text eol=lf
+*.json  text eol=lf
+*.csv   text eol=lf
+
+# Binary artefacts must never be converted
+*.png   binary
+*.jpg   binary
+*.pdf   binary
+*.zip   binary
+*.dpapi binary

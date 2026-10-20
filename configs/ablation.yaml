@@ -1,0 +1,37 @@
+# Offline ablation matrix (C0..C10 plus variants).
+#
+# These configurations are NOT run as LLM experiments. Every candidate is scored
+# once with all signals enabled and the result is frozen into a signal table;
+# each ablation below simply selects a subset of columns, re-fuses, and reports.
+# Re-running the whole matrix therefore costs zero API calls (decision D12).
+#
+# `signals` names refer to the S1..S6 columns of the signal table:
+#   query       S1 similarity over-fit
+#   cross       S2 cross-passage consistency
+#   conflict    S3 answer centrality (frequency density)
+#   conflict_majority   S3b naive majority-vote conflict (negative control)
+#   instruction S4 instruction / template traces
+#   multiview   S5 four-view judgement
+#   ppl         S6 pseudo-perplexity
+
+version: 1
+# Every column that exists in the frozen signal table. conflict_majority is a
+# negative-control variant of S3 and is never enabled by the C8 family.
+all_signals: [query, cross, conflict, conflict_majority, instruction, multiview, ppl]
+
+ablations:
+  C0:  {label: "No defense (top-k passthrough)", signals: [], fusion: none}
+  C1:  {label: "S1 only (similarity over-fit)", signals: [query], fusion: threshold}
+  C1f: {label: "S1 only, sign flipped (control for the v1 design error)", signals: [query], fusion: threshold, flip_query_sign: true}
+  C2:  {label: "S2 only (cross-passage consistency)", signals: [cross], fusion: threshold}
+  C3:  {label: "S3 only (answer centrality)", signals: [conflict], fusion: threshold}
+  C3b: {label: "S3b only (majority-vote conflict, negative control)", signals: [conflict_majority], fusion: threshold}
+  C4:  {label: "S4 only (instruction traces)", signals: [instruction], fusion: threshold}
+  C5:  {label: "S5 only (four-view judgement)", signals: [multiview], fusion: threshold}
+  C6:  {label: "S1+S2+S3 (retrieval, consistency, answer)", signals: [query, cross, conflict], fusion: threshold}
+  C7:  {label: "S4+S5 (judgement pair)", signals: [instruction, multiview], fusion: threshold}
+  C8:  {label: "All signals, mean + threshold", signals: [query, cross, conflict, instruction, multiview, ppl], fusion: threshold}
+  C8w: {label: "All signals, weighted + retrieval prior", signals: [query, cross, conflict, instruction, multiview, ppl], fusion: weighted}
+  C8l: {label: "All signals, logistic regression", signals: [query, cross, conflict, instruction, multiview, ppl], fusion: logistic}
+  C9:  {label: "All except S3", signals: [query, cross, instruction, multiview, ppl], fusion: threshold}
+  C10: {label: "All except S5", signals: [query, cross, conflict, instruction, ppl], fusion: threshold}

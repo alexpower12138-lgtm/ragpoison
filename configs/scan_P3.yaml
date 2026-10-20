@@ -1,0 +1,9 @@
+# P3 -- the default policy: stage-1 coarse filter (no LLM) keeps only chunks
+# with coarse_score > 0.4, stage-2 scans them in batches of ten.
+
+scan:
+  strategy: coarse_to_fine
+  batch_size: 10
+  coarse_threshold: 0.4
+  shard_count: 1
+  budget_tokens_per_scan: 50000

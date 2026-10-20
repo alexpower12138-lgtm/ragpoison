@@ -1,0 +1,93 @@
+# Default configuration. Every experiment config is deep-merged on top of this
+# file, so anything not overridden here applies everywhere.
+#
+# Unknown keys are a hard error (see ragpoison/config.py): a silently ignored
+# typo would invalidate an ablation cell.
+
+runtime:
+  concurrency: 6              # parallel LLM requests; lower it if you see HTTP 429
+  budget_cny: 200             # hard spend cap; the runner stops and writes results/BUDGET_STOP.json
+  seed: 42                    # default seed used when a command does not override it
+  request_timeout_s: 60
+  max_retries: 3              # exponential backoff on transport errors and 429
+  log_level: INFO
+
+llm:
+  provider: deepseek
+  base_url: https://api.deepseek.com
+  model: deepseek-chat
+  temperature: 0
+  max_tokens_json: 120        # judge outputs (JSON)
+  max_tokens_answer: 32       # final answers (short strings)
+
+retrieval:
+  retriever: bm25             # bm25 | tfidf
+  top_n: 15                   # detection pool (N = 3 * k, following RAGuard)
+  top_k: 5                    # context handed to the generator
+  bm25_k1: 1.5
+  bm25_b: 0.75
+  lowercase: true
+  strip_punct: true
+  drop_stopwords: false       # keep stopwords: queries are short and BM25 saturates quickly
+
+detectors:
+  enable_query_sim: true            # S1 similarity over-fit (high similarity is suspicious)
+  enable_cross_consistency: true    # S2 cross-passage consistency
+  enable_answer_conflict: true      # S3 answer centrality (frequency density)
+  enable_instruction_judge: true    # S4 instruction / template traces
+  enable_multiview_judge: true      # S5 four-view judgement
+  enable_pseudo_ppl: false          # S6 character 3-gram pseudo-perplexity
+  multiview:
+    enable_relevance: true
+    enable_instruction: true
+    enable_contradiction: true
+    enable_inducement: true
+  mv_batch_size: 5            # passages per S5 request; an ablation compares 1 vs 5 vs 10
+  answer_conflict_topm: 10    # S3 answer extraction covers the top-M candidates only
+
+fusion:
+  method: weighted            # threshold | weighted | logistic
+  threshold: 0.5
+  weights:                    # used by the weighted fusion only
+    query: 0.5
+    cross: 1.0
+    conflict: 1.5
+    instruction: 1.0
+    multiview: 1.5
+    ppl: 0.5
+  prior_weight_scale: 0.5     # S7 retrieval prior: weight only, never a verdict
+
+generation:
+  prompt_version: gen_v1
+  expect_unknown_token: UNKNOWN
+  answer_match: exact_then_substring
+
+scan:
+  enabled: true
+  strategy: coarse_to_fine    # full | incremental | coarse_to_fine | sharded | coarse_to_fine+sharded
+  batch_size: 10              # chunks per stage-2 request
+  chunk_max_tokens: 120
+  budget_tokens_per_scan: 50000
+  coarse_threshold: 0.4
+  shard_count: 8
+  schedule_cron: "0 3 * * 0"  # weekly, Sunday 03:00 local time
+  scan_version: 1
+  stale_after_days: 30
+
+experiment:
+  attacks:
+    - ATK1_PoisonedRAG
+    - ATK2_CorruptRAG_AS
+    - ATK3_InstructionInjection
+    - ATK4_DIGA_Stuffing
+    - ATK5_StealthAssertion
+    - ATK6_Hedged_Silver
+  injection_counts: [1, 3]
+  seeds: [42, 43]
+  splits:
+    calib: 30                 # used to tune thresholds, weights and the logistic model
+    test: 70                  # evaluated exactly once
+  cache_dir: ./cache
+  max_instances: 0            # 0 = no limit; >0 is used for smoke runs
+  pilot_queries: 20
+  replicate_queries: 100

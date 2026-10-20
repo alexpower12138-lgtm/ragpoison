@@ -1,0 +1,9 @@
+# P1 -- one LLM call per chunk, full corpus. The cost baseline that every other
+# policy is measured against.
+
+scan:
+  strategy: full
+  batch_size: 1
+  coarse_threshold: 0.0
+  shard_count: 1
+  budget_tokens_per_scan: 200000

@@ -1,0 +1,13 @@
+# R1 pilot: a 20-query subset, single injection size, single seed.
+# Purpose: prove the end-to-end chain is correct before spending money on R2.
+# Expected cost: a few yuan. Expected wall clock: about 45 minutes.
+
+experiment:
+  seeds: [42]
+  injection_counts: [1]
+  pilot_queries: 20
+  max_instances: 120
+
+runtime:
+  concurrency: 4
+  budget_cny: 20

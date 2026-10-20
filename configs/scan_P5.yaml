@@ -1,0 +1,10 @@
+# P5 -- sharded: shard_id = hash(chunk_id) % 8, one shard per round, eight
+# rounds to cover the corpus. Shows the coverage that a hard per-round budget
+# can buy, and how many rounds full coverage needs.
+
+scan:
+  strategy: coarse_to_fine+sharded
+  batch_size: 10
+  coarse_threshold: 0.4
+  shard_count: 8
+  budget_tokens_per_scan: 50000

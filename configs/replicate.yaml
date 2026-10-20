@@ -1,0 +1,12 @@
+# R3 replication: the complete grid on an independent synthetic knowledge base
+# (seed 43). Purpose: show that the conclusions are not an artefact of one
+# generated corpus. Expected cost: about 90 CNY. Wall clock: 5-7 hours.
+
+experiment:
+  seeds: [43]
+  injection_counts: [1, 3]
+  replicate_queries: 100
+  max_instances: 0
+
+runtime:
+  budget_cny: 90

@@ -1,0 +1,9 @@
+# P2 -- full corpus, ten chunks per request. Isolates the effect of batching
+# alone, with no coarse filtering.
+
+scan:
+  strategy: full
+  batch_size: 10
+  coarse_threshold: 0.0
+  shard_count: 1
+  budget_tokens_per_scan: 200000
