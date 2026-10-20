@@ -19,8 +19,36 @@ from ..config import Config
 from ..retrieval.bm25 import BM25
 from ..retrieval.tfidf import TfidfIndex
 
-#: Canonical signal names, in the order they appear in the feature vector.
-SIGNAL_ORDER: tuple[str, ...] = ("query", "cross", "conflict", "instruction", "multiview", "ppl")
+#: Ablation name (as used in ``configs/ablation.yaml``) -> (table, column).
+#:
+#: The ablation matrix speaks in conceptual names, the tables speak in column
+#: names, and the two are not the same. Keeping the mapping here means the fusion
+#: layer never has to guess, and the self-test can prove that every name in the
+#: matrix resolves to a column that actually exists.
+#:
+#:   "local" table: results/signals/seed{N}/{family}_inj{n}.jsonl      (WP3, free)
+#:   "llm"   table: results/signals/seed{N}/{family}_inj{n}.llm.jsonl  (WP4, paid)
+ABLATION_COLUMNS: dict[str, tuple[str, str]] = {
+    "query": ("local", "s1"),
+    "cross": ("local", "s2"),
+    "conflict": ("llm", "s3"),
+    "conflict_majority": ("llm", "s3b"),
+    "instruction": ("llm", "s4"),
+    "multiview": ("llm", "s5"),
+    "ppl": ("local", "s6"),
+}
+
+#: Column name of the retrieval prior. It is a fusion weight, never a verdict,
+#: and it is deliberately absent from the ablation matrix.
+PRIOR_COLUMN: tuple[str, str] = ("local", "s7")
+
+
+def columns_for(names: Iterable[str]) -> list[tuple[str, str]]:
+    """Resolve ablation names to ``(table, column)`` pairs, in the given order."""
+    missing = [name for name in names if name not in ABLATION_COLUMNS]
+    if missing:
+        raise KeyError(f"unknown ablation signal name(s): {missing}")
+    return [ABLATION_COLUMNS[name] for name in names]
 
 
 @dataclass(frozen=True)

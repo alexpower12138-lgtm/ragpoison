@@ -372,6 +372,30 @@ def cmd_selftest(args: argparse.Namespace) -> int:
             raise RuntimeError(f"array JSON not parsed: {flags}")
         return "fenced, prose and malformed outputs handled"
 
+    def check_ablation_columns() -> str:
+        from .signals.base import ABLATION_COLUMNS, PRIOR_COLUMN, columns_for
+
+        specs = load_ablation_matrix()
+        declared: set[str] = set()
+        for spec in specs.values():
+            declared.update(spec.signals)
+        missing = sorted(declared - set(ABLATION_COLUMNS))
+        if missing:
+            raise RuntimeError(f"ablation names with no table column: {missing}")
+        local_columns = {"s1", "s2", "s6", "s7"}
+        llm_columns = {"s3", "s3b", "s4", "s5"}
+        for name, (table, column) in ABLATION_COLUMNS.items():
+            pool = local_columns if table == "local" else llm_columns
+            if column not in pool:
+                raise RuntimeError(f"{name} -> {table}.{column} does not exist")
+        columns_for(sorted(declared))
+        if PRIOR_COLUMN[1] not in local_columns:
+            raise RuntimeError("prior column is missing from the local table")
+        return (
+            f"{len(declared)} ablation names resolve to "
+            f"{len(set(ABLATION_COLUMNS.values()))} table columns"
+        )
+
     def check_calibration() -> str:
         from .signals.calibration import compute as compute_calibration, calibration_path
 
@@ -391,6 +415,7 @@ def cmd_selftest(args: argparse.Namespace) -> int:
         ("signals: registry and S6 sanity", check_signals),
         ("signals: JSON parsing of model output", check_json_parsing),
         ("signals: calibration statistics", check_calibration),
+        ("signals: ablation names resolve to columns", check_ablation_columns),
         ("config: experiment configs load", check_all_configs),
         ("config: ablation matrix is complete", check_ablation_matrix),
         ("paths: generated directories exist", check_dirs),
