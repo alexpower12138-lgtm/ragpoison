@@ -1,8 +1,59 @@
 # STATE
 
-last_updated: 2026-10-20 21:30 (WP4 code complete, verified offline with the mock)
+last_updated: 2026-10-20 23:10 (WP4 smoke passed; two S3 design errors found and fixed)
 current_phase: B
-current_wp: WP4 COMPLETE (code) -> human smoke test -> WP5 pilot
+current_wp: WP4 COMPLETE -> WP5 (pilot runner)
+
+## WP4 smoke test (3 instances, real API, 0.08 CNY)
+
+```
+llm signals: 3 instances, 102 requests (30 distinct passages for S4)
+parse failures: S3 0/45 (0.0%), S4 0/30 (0.0%), S5 batches 0/27
+S3 UNKNOWN answers: 86.7%
+```
+
+The parsers are the part that could have invalidated R2, and they are clean: the
+model returns well-formed JSON for all three prompt shapes, including the batched
+array. 102 requests for 3 instances confirms the S4 dedupe (45 candidate rows
+collapse to 30 distinct passages).
+
+### Two S3 design errors, both found by reading the raw rows
+
+1. **Sign.** The plan's formula was `s3 = 1 - clip(c / (2 c_ref))` while its own
+   rationale says "a poisoned passage compresses the words into a short span". The
+   formula produced the opposite of the intent: poison 0.553 against clean 0.822.
+   Corrected to rise with density. Same class of mistake as the sign error in the
+   first version of S1, and the report should say so.
+2. **UNKNOWN is not a score.** The plan scored an UNKNOWN extraction as maximally
+   suspicious. 86.7% of candidates cannot answer a question about another entity,
+   so the signal saturated at 1.0 and flagged the *clean* rows hardest. UNKNOWN is
+   now recorded as `s3_unknown` and the density falls back to question tokens.
+
+### Honest status of the four LLM signals after the fixes
+
+Per-label means on the smoke slice (poison / clean / distractor):
+
+| signal | poison | clean | distractor |
+|---|---|---|---|
+| s3 | 0.447 | 0.178 | 0.054 |
+| s3b | 0.933 | 0.219 | 0.133 |
+| s4 | 0.667 | 0.000 | 0.000 |
+| s5 | 0.750 | 0.089 | 0.000 |
+
+S4 and S5 separate cleanly, which is what the project needs: the style-level
+signals can tell a poisoned passage from genuine evidence.
+
+**S3 and S3b do not really separate, and the table above overstates them.** The
+clean mean is dragged down by 25 rows that answered UNKNOWN. Per pool, the one
+genuine evidence row has density 0.097 against the poison's 0.086, so both score
+alike: these two signals measure "this passage answers the question", and in a pool
+exactly two passages answer it - the attack and the evidence. That is a finding to
+report (C3, C3b), not something to hide behind label means. The ablation must be
+read on the ranked pool, never on these means.
+
+## Next action (exact command for human)
+
+None yet: R1 needs the pilot runner, which is WP5. Say `start WP5`.
 
 ## WP4: LLM-backed signals
 
