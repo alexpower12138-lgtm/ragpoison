@@ -21,17 +21,17 @@ from typing import Any
 
 from . import templates as tpl
 from . import wordbanks as wb
+from .corpora import INJECTION_COUNTS, design_document
 from ..paths import path as repo_path
 from ..retrieval.tokenize import word_count
 
-GENERATOR_VERSION = "1.0.0"
+GENERATOR_VERSION = "1.1.0"
 FACT_COUNT = 100
 CLEAN_COUNT = 100
 QUERY_COUNT = 100
 DISTRACTOR_COUNT = 200
 CALIB_COUNT = 30
 TEST_COUNT = 70
-INJECTION_COUNTS = (1, 3)
 
 JSON_KW: dict[str, Any] = {"indent": 2, "ensure_ascii": False, "sort_keys": False}
 
@@ -364,6 +364,17 @@ def generate(seed: int, out_dir: Path | None = None) -> GenerationResult:
         "families": list(tpl.FAMILIES),
         "calib": CALIB_COUNT,
         "test": TEST_COUNT,
+        # The files under corpora/ are the *shared* corpora used by the corpus
+        # audit. Query-time detection builds its knowledge base from the base pool
+        # plus one query's own poisoned passages; see ragpoison/datagen/corpora.py.
+        "corpus_design": design_document(
+            n_clean=CLEAN_COUNT,
+            n_distractors=DISTRACTOR_COUNT,
+            n_facts=FACT_COUNT,
+            injections=INJECTION_COUNTS,
+            variants=tpl.VARIANTS_PER_FACT,
+            families=len(tpl.FAMILIES),
+        ),
         # Every generated file except the manifest itself, so that the manifest
         # never has to contain its own hash (which is impossible to satisfy).
         "sha256": hashes,

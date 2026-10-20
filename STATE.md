@@ -1,8 +1,8 @@
 # STATE
 
-last_updated: 2026-10-20 10:05 (WP2 stage R delivered; a data-design problem needs a decision)
+last_updated: 2026-10-20 11:20 (WP2a reworked: two corpus designs, 20/20 PASS)
 current_phase: B
-current_wp: WP2a (stage R complete) -> decision needed before WP2b
+current_wp: WP2a (done, two corpora views) -> WP2b (generation and baseline stages)
 repo_root: C:\Users\13619\Desktop\notes\courses\compsci764\0728research_project\1020playground\ragpoison
 spec: ..\1020项目计划书_v2.md
 
@@ -85,47 +85,48 @@ identical. V19 confirms seed 43 has the same structure and different content.
 
 ## Blocked / waiting on human
 
-- DECISION NEEDED before the model stages: the retrieval audit exposed a
-  data-design problem (see "Open issue WP2a-i"). Two candidate fixes are on the
-  table; the corpus composition has to be settled before any API money is spent.
-- Nothing else blocks. WP2 generation/baseline stages need the stored API key
-  (present) and about 50 minutes.
+- Nothing blocks WP2b. It needs the stored API key (present) and about 50 minutes.
 - If the repository should be published, the human creates an empty GitHub
   repository and provides the HTTPS URL; a credential must be configured at that
   point. Never paste a token into the conversation.
 
-## WP2a result (retrieval audit, offline, free)
+## WP2a result (retrieval audit, offline, free) - reworked
 
 Command: `python run.py audit --stage retrieval --seed {42,43}` -> exit 0,
-`GATE R: PASS` on both seeds.
+`GATE R: PASS`, about 20 s per seed.
 
-- every poisoned passage reaches the top-15 detection pool in 100% of cells
-- poison reaches the top-5 (i.e. would enter an undefended context) in 96.7-100%
-- clean supporting passage stays in the pool in 100% of cells on seed 42 and
-  96-100% on seed 43
-- outputs: `reports/audit_retrieval_seed{N}.md`, `results/audit_retrieval_seed{N}.json`
+The corpus design was split in two (see decision WP2a-i, now resolved):
 
-**The audit also found a problem with the corpus composition.** In injection=1
-corpora the top-15 pool contains on average 3.6-8.8 poisoned passages that belong
-to *other* queries (ATK1 8.18, ATK4 8.79, ATK5 4.32, ATK2 3.63). Reason: the
-corpus has 400 chunks of which 100 are poisoned (25%), which is nothing like a
-real knowledge base, and the question-echoing families all share one template, so
-they retrieve each other. Consequence: a detector that correctly flags "this is
-poisoned text" would be scored as producing 8 false positives per true positive,
-so precision would be meaningless. This must be fixed before WP2b.
+- **View 1, query-time (RQ1)**: base pool + only this query's own poison,
+  301 / 303 chunks, built on the fly by `datagen/corpora.py`.
+  Poison reaches the pool in 100% of cells and the top-5 in 99.3-100%;
+  the clean passage stays in the pool in 100% of cells.
+  Pool composition for q_0001 is now: 1 poison (#1, 23.5), its clean passage
+  (#2, 20.4), 7 clean passages of other facts, 6 distractors. No foreign poison.
+- **View 2, shared corpora (RQ2)**: the corpus-audit situation. A pool holds
+  4.63-13.29 poisoned passages, of which 3.63-10.29 belong to other queries.
+  This is the phenomenon the periodic audit exists for and is measured there.
+- Outputs: `reports/audit_retrieval_seed{N}.md` (two tables),
+  `results/audit_retrieval_seed{N}.json`.
 
+Generation is unchanged in shape: `gen-data` still emits the 12 shared corpus
+files; the 1200 query corpora are derived, not stored, and the manifest records
+both designs under `corpus_design`.
 ## Next action (exact command for human)
 
 ```
 python run.py audit --stage retrieval --seed 42
 ```
 
-(works now, free). The model stages are blocked on the corpus-composition
-decision described above; the command that follows it will be
-`python run.py audit --stage generation --seed 42`.
+(works now, free, about 20 s). Next after that is the first paid stage:
 
-Say: go with option A / option B (see the conversation), or ask for the numbers
-again.
+```
+python run.py audit --stage generation --seed 42
+```
+
+which arrives with WP2b.
+
+Say: start WP2b.
 
 ## Open issues / decisions taken
 
@@ -164,28 +165,18 @@ again.
 - WP1-f: clean passages deliberately mention the entity at least twice and the
   attribute label once. Without that, keyword-stuffed passages win the retrieval
   contest and the clean evidence never reaches the detection pool.
-- WP2a-i (OPEN, needs a decision): corpus composition. With 100 poisoned chunks
-  in a 400-chunk corpus, foreign poisoned passages occupy a third to a half of
-  every retrieval pool. Measured BM25 scores per query (seed 42, ATK1, inj1):
-  own poison 23.1, best clean passage 17.4, mean foreign poison 11.3, best
-  distractor 3.5. Because *every* poisoned passage outranks *every* distractor,
-  the pool composition is fixed by how many poisoned passages exist in the
-  corpus, not by the poison ratio: enlarging the distractor side cannot help
-  (an earlier draft of this note proposed exactly that; it is wrong).
-  Consequence: a detector that correctly flags "this text is poisoned" is scored
-  as 8 false positives per true positive, so precision is meaningless under the
-  targeted-only label.
-  Recommended fix: two corpus designs, one per research question.
-    (1) RQ1, query-time detection: the knowledge base seen by a query is
-        100 clean + 200 distractors + *this query's* 1 or 3 poisoned passages
-        (303-305 chunks), built compositionally, no 1200 files on disk. This is
-        the faithful PoisonedRAG setting (a few poison chunks in a large base)
-        and makes precision meaningful.
-    (2) RQ2, corpus audit: one shared corpus containing all 100 poisoned chunks
-        per family. Contamination is the point there: the audit's job is to find
-        poison in the whole base.
-  This costs no API money, only a change to the corpora layer, V12/V20 and the
-  audit, about one work package.
+- WP2a-i (RESOLVED): corpus composition. With 100 poisoned chunks in a 400-chunk
+  corpus, foreign poisoned passages occupied a third to a half of every retrieval
+  pool. Measured BM25 scores per query (seed 42, ATK1, inj1): own poison 23.1,
+  best clean passage 17.4, mean foreign poison 11.3, best distractor 3.5. Because
+  every poisoned passage outranks every distractor, enlarging the distractor side
+  cannot help (an earlier draft of this note proposed exactly that; it is wrong).
+  Resolved by splitting the design per research question:
+    (1) RQ1 query-time: base pool + this query's own poison only, 301/303 chunks,
+        derived on the fly (`datagen/corpora.py`), 1200 corpora, no foreign poison;
+    (2) RQ2 corpus audit: the 12 shared corpora on disk, where the base really
+        does contain 100 poisoned chunks. Contamination is the measurement there.
+  V12 and V20 now validate the query-time view; the audit reports both views.
 - WP2a-ii: `audit --stage {generation,baseline,all}` now says so explicitly and
   exits 3 instead of producing an argparse error. Unimplemented commands are
   detected before argument parsing.

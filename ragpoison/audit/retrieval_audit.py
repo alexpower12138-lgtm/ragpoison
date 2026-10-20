@@ -1,8 +1,18 @@
 """Stage R of the attack-validity audit: is a poisoned passage actually reachable?
 
-This is the free, offline half of WP2 and the gate that everything else depends
-on. If an attack cannot place its passage inside the detection pool, the cell is
-empty and no amount of downstream analysis can rescue it.
+This is the free, offline half of WP2 and the gate everything else depends on. If
+an attack cannot place its passage inside the detection pool, the cell is empty
+and no downstream analysis can rescue it.
+
+Two views are reported, matching the two research questions:
+
+* **query-time** (RQ1): the knowledge base a query actually sees, i.e. the base
+  pool plus only that query's own poisoned passages (see
+  ``ragpoison/datagen/corpora.py``). This is the view every detection and
+  generation metric uses.
+* **corpus-time** (RQ2): the shared corpora on disk, where the base contains one
+  hundred poisoned chunks. This measures the situation the periodic corpus audit
+  exists for, and quantifies how badly a retrieval pool is contaminated there.
 
 Outputs
 -------
@@ -14,12 +24,11 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from pathlib import Path
 
+from ..datagen.corpora import iter_query_corpora
 from ..datagen.loader import Bundle, load_bundle
 from ..paths import path as repo_path, rel
 from ..retrieval.bm25 import BM25
-from ..retrieval.tokenize import normalize_text
 
 #: Gate R thresholds from the specification: a canonical attack has to reach the
 #: pool almost always, a stealth attack is allowed to be slightly weaker because
@@ -36,8 +45,9 @@ CANONICAL_FAMILIES = (
 
 
 @dataclass
-class CorpusResult:
-    corpus_id: str
+class QueryCorpusResult:
+    """Aggregated result for one (attack family, injection) under the RQ1 view."""
+
     attack_family: str
     injection: int
     n_queries: int = 0
@@ -46,12 +56,10 @@ class CorpusResult:
     poison_ranks: list[int] = field(default_factory=list)
     clean_in_pool: int = 0
     clean_ranks: list[int] = field(default_factory=list)
-    foreign_poison_in_pool: int = 0
     cells: list[dict] = field(default_factory=list)
 
     @property
     def n_poison(self) -> int:
-        """Number of poisoned passages that can be retrieved (queries x injection)."""
         return self.n_queries * self.injection
 
     @property
@@ -83,6 +91,23 @@ class CorpusResult:
         return max(self.poison_ranks) if self.poison_ranks else 0
 
 
+@dataclass
+class SharedCorpusResult:
+    """Aggregated result for one shared corpus (the RQ2 view)."""
+
+    corpus_id: str
+    attack_family: str
+    injection: int
+    n_queries: int = 0
+    poison_per_pool: float = 0.0
+    foreign_poison_per_pool: float = 0.0
+    clean_in_pool: int = 0
+
+    @property
+    def clean_pool_rate(self) -> float:
+        return self.clean_in_pool / self.n_queries if self.n_queries else 0.0
+
+
 def _pool_size() -> int:
     try:
         from ..config import load_config
@@ -93,69 +118,93 @@ def _pool_size() -> int:
 
 
 def run(seed: int = 42, top_n: int | None = None, write: bool = True) -> dict:
-    """Rank every corpus and report how reachable each poisoned passage is."""
+    """Rank every corpus in both views and report reachability."""
     bundle: Bundle = load_bundle(seed)
     pool = top_n or _pool_size()
     top_k = 5
     texts = bundle.texts()
-    clean_id_by_query = {
-        row["query_id"]: bundle.clean_id_for_fact(row["fact_id"]) for row in bundle.queries
-    }
+    queries = {row["query_id"]: row for row in bundle.queries}
+    clean_id = {row["query_id"]: bundle.clean_id_for_fact(row["fact_id"]) for row in bundle.queries}
 
-    results: list[CorpusResult] = []
+    # ---------------------------------------------------------------- RQ1 view
+    grouped: dict[tuple[str, int], QueryCorpusResult] = {}
+    for corpus in iter_query_corpora(bundle):
+        key = (corpus["attack_family"], int(corpus["injection"]))
+        result = grouped.get(key)
+        if result is None:
+            result = QueryCorpusResult(*key)
+            grouped[key] = result
+
+        documents = [(chunk_id, texts[chunk_id]) for chunk_id in corpus["chunk_ids"]]
+        index = BM25().fit(documents)
+        query_id = corpus["query_id"]
+        query = queries[query_id]
+        ordered = index.ranked_ids(query["question"])
+        ranks = {doc_id: position for position, (doc_id, _score) in enumerate(ordered, start=1)}
+
+        own_ranks = [ranks[chunk_id] for chunk_id in corpus["poison_chunk_ids"]]
+        in_pool = sum(1 for rank in own_ranks if rank <= pool)
+        in_top5 = sum(1 for rank in own_ranks if rank <= top_k)
+        clean_rank = ranks.get(clean_id[query_id], 0)
+
+        result.n_queries += 1
+        result.poison_in_pool += in_pool
+        result.poison_in_top5 += in_top5
+        result.poison_ranks.extend(own_ranks)
+        result.clean_ranks.append(clean_rank)
+        result.clean_in_pool += 1 if 0 < clean_rank <= pool else 0
+        result.cells.append(
+            {
+                "corpus_id": corpus["corpus_id"],
+                "attack_family": result.attack_family,
+                "injection": result.injection,
+                "query_id": query_id,
+                "fact_id": query["fact_id"],
+                "n_chunks": corpus["n_chunks"],
+                "clean_rank": clean_rank,
+                "own_poison_ranks": own_ranks,
+                "own_poison_in_pool": in_pool,
+                "own_poison_in_top5": in_top5,
+            }
+        )
+
+    query_results = [grouped[key] for key in sorted(grouped)]
+
+    # ---------------------------------------------------------------- RQ2 view
+    shared_results: list[SharedCorpusResult] = []
     for corpus_id in sorted(bundle.corpora):
         corpus = bundle.corpora[corpus_id]
         documents = [(chunk_id, texts[chunk_id]) for chunk_id in corpus["chunk_ids"]]
         index = BM25().fit(documents)
         poison_ids = set(corpus["poison_chunk_ids"])
-        owner: dict[str, str] = corpus["poison_owner"]
-        result = CorpusResult(
+        owner = corpus["poison_owner"]
+        result = SharedCorpusResult(
             corpus_id=corpus_id,
             attack_family=corpus["attack_family"],
             injection=int(corpus["injection"]),
         )
-
+        total_poison = 0
+        total_foreign = 0
         for query in bundle.queries:
             query_id = query["query_id"]
             ordered = index.ranked_ids(query["question"])
-            ranks = {doc_id: position for position, (doc_id, _score) in enumerate(ordered, start=1)}
-            pool_ids = ordered[:pool]
-
-            own_poison = [pid for pid, qid in owner.items() if qid == query_id]
-            own_ranks = [ranks[pid] for pid in own_poison]
-            in_pool = sum(1 for rank in own_ranks if rank <= pool)
-            in_top5 = sum(1 for rank in own_ranks if rank <= top_k)
-            clean_rank = ranks.get(clean_id_by_query[query_id], 0)
-            foreign = sum(
-                1
-                for doc_id, _score in pool_ids
-                if doc_id in poison_ids and owner.get(doc_id) != query_id
+            pool_ids = [doc_id for doc_id, _score in ordered[:pool]]
+            total_poison += sum(1 for doc_id in pool_ids if doc_id in poison_ids)
+            total_foreign += sum(
+                1 for doc_id in pool_ids if doc_id in poison_ids and owner.get(doc_id) != query_id
             )
-
+            clean_rank = next(
+                (position for position, (doc_id, _score) in enumerate(ordered, start=1)
+                 if doc_id == clean_id[query_id]),
+                0,
+            )
             result.n_queries += 1
-            result.poison_in_pool += in_pool
-            result.poison_in_top5 += in_top5
-            result.poison_ranks.extend(own_ranks)
-            result.clean_ranks.append(clean_rank)
             result.clean_in_pool += 1 if 0 < clean_rank <= pool else 0
-            result.foreign_poison_in_pool += foreign
-            result.cells.append(
-                {
-                    "corpus_id": corpus_id,
-                    "attack_family": result.attack_family,
-                    "injection": result.injection,
-                    "query_id": query_id,
-                    "fact_id": query["fact_id"],
-                    "clean_rank": clean_rank,
-                    "own_poison_ranks": own_ranks,
-                    "own_poison_in_pool": in_pool,
-                    "own_poison_in_top5": in_top5,
-                    "foreign_poison_in_pool": foreign,
-                }
-            )
-        results.append(result)
+        result.poison_per_pool = total_poison / max(result.n_queries, 1)
+        result.foreign_poison_per_pool = total_foreign / max(result.n_queries, 1)
+        shared_results.append(result)
 
-    gate_ok, gate_detail = _gate_r(results)
+    gate_ok, gate_detail = _gate_r(query_results)
     payload = {
         "seed": seed,
         "pool_size": pool,
@@ -163,7 +212,8 @@ def run(seed: int = 42, top_n: int | None = None, write: bool = True) -> dict:
         "generator_version": bundle.manifest.get("generator_version"),
         "manifest_sha256": bundle.manifest.get("sha256", {}),
         "gate_r": {"passed": gate_ok, "detail": gate_detail},
-        "corpora": [_corpus_payload(row) for row in results],
+        "query_time": [_query_payload(row) for row in query_results],
+        "corpus_time": [_shared_payload(row) for row in shared_results],
     }
 
     if write:
@@ -174,17 +224,21 @@ def run(seed: int = 42, top_n: int | None = None, write: bool = True) -> dict:
         )
         md_path = repo_path("reports", f"audit_retrieval_seed{seed}.md")
         md_path.parent.mkdir(parents=True, exist_ok=True)
-        md_path.write_text(render_markdown(bundle, results, pool, gate_ok, gate_detail), encoding="utf-8", newline="\n")
+        md_path.write_text(
+            render_markdown(bundle, query_results, shared_results, pool, gate_ok, gate_detail),
+            encoding="utf-8",
+            newline="\n",
+        )
         payload["_written"] = [rel(json_path), rel(md_path)]
 
-    payload["_results"] = results
+    payload["_query_results"] = query_results
+    payload["_shared_results"] = shared_results
     payload["_bundle"] = bundle
     return payload
 
 
-def _corpus_payload(row: CorpusResult) -> dict:
+def _query_payload(row: QueryCorpusResult) -> dict:
     return {
-        "corpus_id": row.corpus_id,
         "attack_family": row.attack_family,
         "injection": row.injection,
         "n_queries": row.n_queries,
@@ -196,14 +250,23 @@ def _corpus_payload(row: CorpusResult) -> dict:
         "worst_poison_rank": row.worst_poison_rank,
         "mean_clean_rank": row.mean_clean_rank,
         "worst_clean_rank": row.worst_clean_rank,
-        "mean_foreign_poison_in_pool": (
-            row.foreign_poison_in_pool / row.n_queries if row.n_queries else 0.0
-        ),
         "cells": row.cells,
     }
 
 
-def _gate_r(results: list[CorpusResult]) -> tuple[bool, str]:
+def _shared_payload(row: SharedCorpusResult) -> dict:
+    return {
+        "corpus_id": row.corpus_id,
+        "attack_family": row.attack_family,
+        "injection": row.injection,
+        "n_queries": row.n_queries,
+        "poison_per_pool": row.poison_per_pool,
+        "foreign_poison_per_pool": row.foreign_poison_per_pool,
+        "clean_in_pool_rate": row.clean_pool_rate,
+    }
+
+
+def _gate_r(results: list[QueryCorpusResult]) -> tuple[bool, str]:
     """Gate R: every family must reach the pool in at least its threshold."""
     thresholds: dict[str, float] = {}
     for row in results:
@@ -234,64 +297,65 @@ def _gate_r(results: list[CorpusResult]) -> tuple[bool, str]:
 
 def render_markdown(
     bundle: Bundle,
-    results: list[CorpusResult],
+    query_results: list[QueryCorpusResult],
+    shared_results: list[SharedCorpusResult],
     pool: int,
     gate_ok: bool,
     gate_detail: str,
 ) -> str:
     manifest_sha = bundle.manifest.get("sha256", {})
-    poison_file_sha = manifest_sha.get("poisoned_passages.json", "")
     lines: list[str] = []
     lines.append(f"# Retrieval audit (stage R) - seed {bundle.seed}")
     lines.append("")
     lines.append("Offline audit: no language model is called, so this stage costs nothing.")
     lines.append("")
     lines.append(f"- detection pool: top-{pool}")
-    lines.append(f"- generated by: generator version {bundle.manifest.get('generator_version')}")
-    lines.append(f"- poisoned_passages.json sha256: `{poison_file_sha}`")
+    lines.append(f"- generator version: {bundle.manifest.get('generator_version')}")
+    lines.append(
+        f"- poisoned_passages.json sha256: `{manifest_sha.get('poisoned_passages.json', '')}`"
+    )
     lines.append(f"- queries / facts: {len(bundle.queries)} / {len(bundle.facts)}")
-    lines.append(f"- corpora audited: {len(results)}")
     lines.append("")
     lines.append(f"**Gate R: {'PASS' if gate_ok else 'FAIL'}** - {gate_detail}")
     lines.append("")
-    lines.append("## Per corpus")
+    lines.append("## View 1: query-time corpora (RQ1)")
     lines.append("")
     lines.append(
-        "| corpus | family | inj | poison in pool | poison in top-5 | mean poison rank "
-        "| clean in pool | mean clean rank | worst clean rank | foreign poison in pool |"
+        "Knowledge base seen by one query: 100 clean passages + 200 distractors + only that "
+        "query's own poisoned passages (301 or 303 chunks). This is the view every detection "
+        "and generation metric uses."
     )
-    lines.append("|---|---|---|---|---|---|---|---|---|---|")
-    for row in sorted(results, key=lambda r: (r.attack_family, r.injection)):
+    lines.append("")
+    lines.append(
+        "| family | inj | poison in pool | poison in top-5 | mean poison rank | "
+        "clean in pool | mean clean rank | worst clean rank |"
+    )
+    lines.append("|---|---|---|---|---|---|---|---|")
+    for row in query_results:
         lines.append(
-            f"| {row.corpus_id} | {row.attack_family} | {row.injection} "
-            f"| {row.pool_rate:.1%} | {row.top5_rate:.1%} | {row.mean_poison_rank:.1f} "
-            f"| {row.clean_pool_rate:.1%} | {row.mean_clean_rank:.1f} | {row.worst_clean_rank} "
-            f"| {row.foreign_poison_in_pool / max(row.n_queries, 1):.2f} |"
+            f"| {row.attack_family} | {row.injection} | {row.pool_rate:.1%} | {row.top5_rate:.1%} "
+            f"| {row.mean_poison_rank:.1f} | {row.clean_pool_rate:.1%} "
+            f"| {row.mean_clean_rank:.1f} | {row.worst_clean_rank} |"
         )
     lines.append("")
+    lines.append("## View 2: shared corpora (RQ2, the corpus-audit situation)")
+    lines.append("")
     lines.append(
-        "Rates in the *poison* columns are shares of poisoned passages (queries x injection); "
-        "rates in the *clean* column are shares of queries."
+        "One knowledge base per attack family containing *all* 100 queries' poisoned passages "
+        "(400 or 600 chunks). Poisoned text written for other queries fills the retrieval pool; "
+        "this is precisely the situation the periodic corpus audit must handle, and the reason "
+        "the two views are kept apart."
     )
     lines.append("")
-    lines.append("## By family (both injection sizes pooled)")
-    lines.append("")
     lines.append(
-        "| family | threshold | poison in pool | poison in top-5 | mean poison rank | verdict |"
+        "| corpus | family | inj | poison per pool | of which foreign | clean in pool |"
     )
     lines.append("|---|---|---|---|---|---|")
-    for family in sorted({row.attack_family for row in results}):
-        rows = [row for row in results if row.attack_family == family]
-        n = sum(row.n_queries for row in rows) or 1
-        pool_rate = sum(row.poison_in_pool for row in rows) / n
-        top5_rate = sum(row.poison_in_top5 for row in rows) / n
-        ranks = [rank for row in rows for rank in row.poison_ranks]
-        mean_rank = sum(ranks) / len(ranks) if ranks else 0.0
-        threshold = GATE_R_CANONICAL if family in CANONICAL_FAMILIES else GATE_R_STEALTH
-        verdict = "PASS" if pool_rate >= threshold else "FAIL"
+    for row in shared_results:
         lines.append(
-            f"| {family} | {threshold:.0%} | {pool_rate:.1%} | {top5_rate:.1%} "
-            f"| {mean_rank:.1f} | {verdict} |"
+            f"| {row.corpus_id} | {row.attack_family} | {row.injection} "
+            f"| {row.poison_per_pool:.2f} / {pool} | {row.foreign_poison_per_pool:.2f} "
+            f"| {row.clean_pool_rate:.1%} |"
         )
     lines.append("")
     lines.append("## Reading these numbers")
@@ -302,18 +366,16 @@ def render_markdown(
     )
     lines.append(
         "- *poison in top-5* is the share that would enter the generator context with no "
-        "defence at all. A high value here means the attack is genuinely strong, not that "
-        "the defence will fail."
+        "defence at all. A high value means the attack is genuinely strong."
     )
     lines.append(
-        "- *clean in pool* below 100% means the clean supporting passage was evicted by "
-        "competing poisoned passages; those cells are excluded from later statistics and "
-        "the exclusion rate is reported."
+        "- *clean in pool* below 100% means the clean supporting passage was pushed out; those "
+        "cells are excluded from later statistics and the exclusion rate is reported."
     )
     lines.append(
-        "- *foreign poison in pool* counts poisoned passages written for a different query. "
-        "They are real poisoned text but not attacks on this query, which is why the label "
-        "schema keeps them in a separate class (decision D8)."
+        "- In view 2, *of which foreign* counts poisoned passages written for a different "
+        "query. They are genuinely poisoned text, so the corpus audit should flag them, but "
+        "they are not attacks on the query being evaluated, which is why view 1 removes them."
     )
     lines.append("")
     return "\n".join(lines)
@@ -321,21 +383,28 @@ def render_markdown(
 
 def summarize(payload: dict) -> str:
     """One-screen summary for the console."""
-    results: list[CorpusResult] = payload["_results"]
+    query_results: list[QueryCorpusResult] = payload["_query_results"]
+    shared_results: list[SharedCorpusResult] = payload["_shared_results"]
     gate = payload["gate_r"]
     lines = [
         f"pool size: top-{payload['pool_size']}",
         f"GATE R: {'PASS' if gate['passed'] else 'FAIL'}  ({gate['detail']})",
         "",
+        "query-time corpora (RQ1)",
         f"{'family':<26}{'inj':>4}{'in pool':>10}{'in top5':>10}{'clean':>9}{'meanP':>8}",
     ]
-    for row in sorted(results, key=lambda r: (r.attack_family, r.injection)):
+    for row in query_results:
         lines.append(
             f"{row.attack_family:<26}{row.injection:>4}{row.pool_rate:>9.1%}"
             f"{row.top5_rate:>10.1%}{row.clean_pool_rate:>9.1%}{row.mean_poison_rank:>8.1f}"
         )
     lines.append("")
-    lines.append("poison rates are over poisoned passages; clean is over queries")
+    lines.append("shared corpora (RQ2): poison per pool, of which foreign")
+    for row in shared_results:
+        lines.append(
+            f"  {row.corpus_id:<32} {row.poison_per_pool:5.2f} / {payload['pool_size']}"
+            f"   foreign {row.foreign_poison_per_pool:5.2f}"
+        )
     if payload.get("_written"):
         lines.append("")
         for item in payload["_written"]:

@@ -18,6 +18,7 @@ from typing import Callable
 
 from . import templates as tpl
 from . import wordbanks as wb
+from .corpora import iter_query_corpora
 from .generator import (
     CALIB_COUNT,
     CLEAN_COUNT,
@@ -236,56 +237,55 @@ def validate(
         return "all ids match their pattern and are globally unique"
 
     def v12() -> str:
-        # The requirement is *reachability of the detection pool*, not dominance.
-        # A strong attack is supposed to outrank the clean supporting passage;
-        # what must hold is that both the clean passage and the poisoned passages
-        # land inside the top-N pool, otherwise the query carries no signal at all
-        # and the ablation cell would be empty.
+        # Rank inside the *query-time* corpus: the base pool plus this query's own
+        # poisoned passages. That is the knowledge base the detector actually sees
+        # (see ragpoison/datagen/corpora.py). Ranking inside the shared corpus would
+        # measure something else: how many poisoned passages written for other
+        # queries happen to compete, which is the corpus-audit question, not this one.
         top_n = _top_n()
         clean_for_query = {row["query_id"]: row["passage_id"] for row in _query_index(result)}
+        queries = {row["query_id"]: row for row in result.queries}
         worst_clean = 0
         worst_poison = 0
         clean_fail: list[str] = []
         poison_fail: list[str] = []
         poison_ranks: dict[str, list[int]] = {family: [] for family in tpl.FAMILIES}
 
-        for corpus_id, corpus in sorted(result.corpora.items()):
+        for corpus in iter_query_corpora(result):
             documents = [(chunk_id, texts[chunk_id]) for chunk_id in corpus["chunk_ids"]]
             index = BM25().fit(documents)
-            owned = corpus["poison_owner"]
+            query_id = corpus["query_id"]
+            query = queries[query_id]
+            ordered = index.ranked_ids(query["question"])
+            ranks = {
+                doc_id: position for position, (doc_id, _score) in enumerate(ordered, start=1)
+            }
+
+            clean_rank = ranks.get(clean_for_query[query_id], 0)
+            worst_clean = max(worst_clean, clean_rank)
+            if clean_rank == 0 or clean_rank > top_n:
+                clean_fail.append(f"{corpus['corpus_id']}:{query_id}:{clean_rank}")
+                if notes is not None:
+                    notes.append(
+                        {
+                            "corpus_id": corpus["corpus_id"],
+                            "query_id": query_id,
+                            "fact_id": query["fact_id"],
+                            "passage_id": clean_for_query[query_id],
+                            "clean_rank": clean_rank,
+                            "reason": "clean_passage_outside_pool",
+                        }
+                    )
+
             family = corpus["attack_family"]
-            for query in result.queries:
-                ordered = index.ranked_ids(query["question"])
-                ranks = {
-                    doc_id: position for position, (doc_id, _score) in enumerate(ordered, start=1)
-                }
+            for poison_id in corpus["poison_chunk_ids"]:
+                poison_rank = ranks.get(poison_id, 0)
+                poison_ranks[family].append(poison_rank)
+                worst_poison = max(worst_poison, poison_rank)
+                if poison_rank == 0 or poison_rank > top_n:
+                    poison_fail.append(f"{corpus['corpus_id']}:{poison_id}:{poison_rank}")
 
-                clean_rank = ranks.get(clean_for_query[query["query_id"]], 0)
-                worst_clean = max(worst_clean, clean_rank)
-                if clean_rank == 0 or clean_rank > top_n:
-                    clean_fail.append(f"{corpus_id}:{query['query_id']}:{clean_rank}")
-                    if notes is not None:
-                        notes.append(
-                            {
-                                "corpus_id": corpus_id,
-                                "query_id": query["query_id"],
-                                "fact_id": query["fact_id"],
-                                "passage_id": clean_for_query[query["query_id"]],
-                                "clean_rank": clean_rank,
-                                "reason": "clean_passage_outside_pool",
-                            }
-                        )
-
-                for poison_id, owner in owned.items():
-                    if owner != query["query_id"]:
-                        continue
-                    poison_rank = ranks.get(poison_id, 0)
-                    poison_ranks[family].append(poison_rank)
-                    worst_poison = max(worst_poison, poison_rank)
-                    if poison_rank == 0 or poison_rank > top_n:
-                        poison_fail.append(f"{corpus_id}:{poison_id}:{poison_rank}")
-
-        total_cells = len(result.corpora) * len(result.queries)
+        total_cells = sum(1 for _ in iter_query_corpora(result))
         invalid_rate = len(clean_fail) / total_cells if total_cells else 0.0
         # A poisoned passage must always be reachable: if the attack cannot enter
         # the pool there is no experiment. A clean passage may occasionally be
@@ -306,7 +306,7 @@ def validate(
         }
         summary = ", ".join(f"{fam.split('_')[0]}={rate:.0%}" for fam, rate in in_top5.items())
         return (
-            f"clean rank <= {top_n} (worst {worst_clean}, invalid {invalid_rate:.2%}), "
+            f"query corpora: clean rank <= {top_n} (worst {worst_clean}, invalid {invalid_rate:.2%}), "
             f"poison rank <= {top_n} (worst {worst_poison}); "
             f"poison in top-5 [{summary}]"
         )
@@ -478,6 +478,7 @@ def v19(result: GenerationResult) -> str:
 
 
 def v20(result: GenerationResult) -> str:
+    # Shared corpora: the corpus-audit view, one file per (family, injection).
     expected_keys = len(tpl.FAMILIES) * len(INJECTION_COUNTS)
     assert len(result.corpora) == expected_keys, f"{len(result.corpora)} corpora"
     for corpus_id, corpus in result.corpora.items():
@@ -492,7 +493,33 @@ def v20(result: GenerationResult) -> str:
         assert set(corpus["poison_chunk_ids"]) <= set(corpus["chunk_ids"]), (
             f"{corpus_id}: poison ids outside the corpus"
         )
-    return f"{expected_keys} corpora, sizes 400 and 600"
+
+    # Query-time corpora: the view used by detection, constructed on the fly.
+    base = CLEAN_COUNT + DISTRACTOR_COUNT
+    seen = {"1": 0, "3": 0}
+    for corpus in iter_query_corpora(result):
+        injection = int(corpus["injection"])
+        assert corpus["n_chunks"] == base + injection, (
+            f"{corpus['corpus_id']}: {corpus['n_chunks']} != {base + injection}"
+        )
+        assert len(corpus["poison_chunk_ids"]) == injection, (
+            f"{corpus['corpus_id']}: expected {injection} poisoned chunk(s)"
+        )
+        owners = set(corpus["poison_owner"].values())
+        assert owners == {corpus["query_id"]}, (
+            f"{corpus['corpus_id']}: contains poison owned by {sorted(owners)}"
+        )
+        assert set(corpus["poison_chunk_ids"]) <= set(corpus["chunk_ids"])
+        seen[str(injection)] += 1
+    for injection, count in seen.items():
+        assert count == len(tpl.FAMILIES) * FACT_COUNT, (
+            f"{count} query corpora at injection {injection}, expected {len(tpl.FAMILIES) * FACT_COUNT}"
+        )
+    return (
+        f"{expected_keys} shared corpora (400/600 chunks) + "
+        f"{seen['1'] + seen['3']} query corpora ({base + 1}/{base + 3} chunks), "
+        "no foreign poison in any query corpus"
+    )
 
 
 def summarize(outcomes: list[CheckOutcome]) -> tuple[bool, str]:
