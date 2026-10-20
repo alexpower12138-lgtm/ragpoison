@@ -1,8 +1,51 @@
 # STATE
 
-last_updated: 2026-10-20 18:20 (WP3 complete: local signals frozen for both seeds)
+last_updated: 2026-10-20 19:40 (seed 43 audited: two independent knowledge bases agree)
 current_phase: B
-current_wp: WP3 COMPLETE -> WP4 (LLM-backed signals S3/S4/S5)
+current_wp: WP3 COMPLETE, WP2 audited on both seeds -> WP4 (S3/S4/S5)
+
+## WP2 on seed 43: the cross-knowledge-base replication result (I5)
+
+Both seeds now have Gate R, Gate G, the controls and the two-condition baseline.
+The two knowledge bases were generated independently, share no facts, and the
+conclusions reproduce:
+
+| measure | seed 42 | seed 43 |
+|---|---|---|
+| Gate G canonical worst | 99.3% | 98.0% |
+| Gate G stealth (ATK6) | 82.3% target / 84.0% not_correct | 82.7% / 82.7% |
+| dud variants | none | none |
+| baseline plain ASR | 68.6% | 68.1% |
+| baseline plain clean accuracy | 31.4% | 31.9% |
+| baseline guarded ASR | 27.3% | 25.8% |
+| baseline guarded clean accuracy | 4.2% | 3.6% |
+| clean-context control | 97.0% | 99.0% |
+| external-knowledge leak | 0.0% | 0.0% |
+
+Per-family ASR under the plain prompt, worst disagreement between seeds:
+
+| family | seed 42 inj1 / inj3 | seed 43 inj1 / inj3 | max gap |
+|---|---|---|---|
+| ATK1 | 76% / 100% | 80% / 100% | 4 |
+| ATK2 | 68% / 96% | 61% / 95% | 7 |
+| ATK3 | 54% / 99% | 45% / 99% | 9 |
+| ATK4 | 55% / 78% | 60% / 71% | 7 |
+| ATK5 | 35% / 97% | 37% / 100% | 3 |
+| ATK6 | 28% / 37% | 29% / 40% | 3 |
+
+Every qualitative pattern holds: injection=3 dominates injection=1, ATK6 is the
+weakest attack, ATK5 is the weakest at injection=1 and near-perfect at 3, and the
+abstention instruction costs clean accuracy everywhere.
+
+Cache accounting for seed 43: 1 control prompt and 3 baseline prompts were already
+cached. Verified that all four are genuine duplicate prompts (identical question
+and identical context, either across injection sizes or across the two seeds), not
+a key collision: the baseline produced 2400 prompts of which 2398 are unique, and
+the control prompts are all unique within seed 43.
+
+Spend so far: 84.27 -> 76.55 CNY, i.e. about 7.7 CNY for the whole audit
+programme on both seeds (the in-file estimate reads higher because the price table
+is deliberately conservative; the balance is the authoritative number).
 
 ## WP3 result (retrieval + local signals, offline, zero API cost)
 
