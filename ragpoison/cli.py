@@ -814,6 +814,12 @@ def cmd_run(args: argparse.Namespace) -> int:
                 f"WARNING: parse-failure rate above 5% on seed {summary['seed']}; "
                 "inspect the report before spending on a larger run."
             )
+        if summary.get("failed_calls"):
+            print(
+                f"WARNING: {summary['failed_calls']} call(s) failed even after retries on "
+                f"seed {summary['seed']}. The affected rows are marked call_failed; re-run the "
+                "same command to heal them, it costs only the missing calls."
+            )
         if summary["s3_unknown_rate"] > 0.95:
             print(
                 f"WARNING: S3 extracted no answer for {summary['s3_unknown_rate']:.1%} of "

@@ -149,7 +149,7 @@ def extract_llm(
                             view_description=prompts.S5_VIEWS[view],
                         ),
                         stage=f"s5_{view}",
-                        max_tokens=max_tokens * 3,
+                        max_tokens=max_tokens * 5,
                         extra={
                             "corpus_id": corpus["corpus_id"],
                             "view": view,
@@ -221,10 +221,25 @@ def extract_llm(
         }
 
     results = client.complete_many(calls, label="signals    ", progress_every=200)
+
+    # Transient network failures are retried here rather than being written into
+    # the table as a zero: a failed S4 call would otherwise score the passage as
+    # perfectly clean, which is the worst possible way to lose a data point.
+    for _pass in range(2):
+        pending = [index for index, result in enumerate(results) if not result.ok]
+        if not pending:
+            break
+        if not quiet:
+            print(f"  retrying {len(pending)} failed call(s) ...", flush=True)
+        retried = client.complete_many([calls[index] for index in pending], quiet=quiet)
+        for index, result in zip(pending, retried):
+            results[index] = result
+    failed_calls = sum(1 for result in results if not result.ok)
     outcome_by_call = {id(call): result for call, result in zip(calls, results)}
 
     # ---------------------------------------------------------------- assembly
     s4_cache: dict[str, tuple[float, str, bool]] = {}
+    failed_batches_total = 0
     rows: list[dict] = []
     parse_stats = {"s3_fail": 0, "s4_fail": 0, "s5_fail": 0, "s3_unknown": 0, "s3_total": 0}
 
@@ -276,6 +291,20 @@ def extract_llm(
             for position, candidate in enumerate(chunk, start=1):
                 view_flags[view][candidate.doc_id] = float(parsed.get(position, 0.0))
 
+        # S4 calls for a passage already judged in this process were never issued,
+        # so they have no entry in outcome_by_call; use .get and skip them.
+        failed_docs: set[str] = set()
+        for kind in ("s3", "s4"):
+            for doc_id, call in plan["calls"].get(kind, []):
+                outcome = outcome_by_call.get(id(call))
+                if outcome is not None and not outcome.ok:
+                    failed_docs.add(doc_id)
+        failed_batches = 0
+        for _chunk, call in plan["calls"].get("s5", []):
+            outcome = outcome_by_call.get(id(call))
+            if outcome is not None and not outcome.ok:
+                failed_batches += 1
+        failed_batches_total += failed_batches
         majority = s3b_majority.scores(answers)
 
         for candidate in context.candidates:
@@ -294,6 +323,7 @@ def extract_llm(
             ]
             s5_score = sum(view_values) / len(view_values) if view_values else 0.0
 
+            failed_any = candidate.doc_id in failed_docs
             label_class, is_attack = _label(candidate.doc_id, corpus, bundle)
             rows.append(
                 {
@@ -319,6 +349,7 @@ def extract_llm(
                         f"s5_{view}": round(view_flags.get(view, {}).get(candidate.doc_id, 0.0), 6)
                         for view in VIEWS
                     },
+                    "call_failed": int(failed_any),
                     "label_class": label_class,
                     "is_attack_for_query": is_attack,
                 }
@@ -391,6 +422,8 @@ def extract_llm(
         "c_ref": c_ref,
         "c_ref_source": c_ref_source,
         "parse": parse_stats,
+        "failed_calls": failed_calls,
+        "failed_batches": failed_batches_total,
         "s3_parse_fail_rate": parse_stats["s3_fail"] / total_calls,
         "s3_unknown_rate": parse_stats["s3_unknown"] / total_calls,
         "s4_parse_fail_rate": (

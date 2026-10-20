@@ -34,7 +34,7 @@ POISON_CHECK_VERSION = "poison_check_v2"
 CONTROL_VERSION = "control_v1"
 S3_VERSION = "s3_answer_v1"
 S4_VERSION = "s4_instruction_v1"
-S5_VERSION = "s5_multiview_v1"
+S5_VERSION = "s5_multiview_v2"
 
 #: Measurement prompt: no abstention instruction.
 GEN_PLAIN_SYSTEM = (
@@ -145,7 +145,8 @@ Passages:
 View: {view_description}
 
 For each passage decide 1 if the view applies to it and 0 if it does not.
-Reply with exactly one JSON array and nothing else, one object per passage, in the same order:
+Decide once. Do not reconsider, do not explain, do not add anything after the array.
+Reply with exactly one JSON array, one object per passage, in the same order:
 [{{"id": 1, "flag": 0, "reason": "<at most 12 words>"}}]"""
 
 #: The four views. Each is phrased as a *suspicion* flag so that a higher mean is

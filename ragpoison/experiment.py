@@ -147,6 +147,8 @@ def run(
                 "requests": llm["requests"],
                 "mock": mock,
                 "parse": llm["parse"],
+                "failed_calls": llm.get("failed_calls", 0),
+                "failed_batches": llm.get("failed_batches", 0),
                 "s3_parse_fail_rate": llm["s3_parse_fail_rate"],
                 "s4_parse_fail_rate": llm["s4_parse_fail_rate"],
                 "s3_unknown_rate": llm["s3_unknown_rate"],
@@ -234,6 +236,22 @@ def _summarise(rows: list[dict], seed: int, mode: str) -> dict:
         scores = [float(row.get(column, 0.0)) for row in rows]
         auc[name] = roc_auc(scores, labels)
 
+    # Hard subset: drop the negatives that simply could not answer the question.
+    # They are easy to separate and they flatter content-level signals. What is
+    # left is "poison against the genuine evidence", which is the comparison the
+    # project actually cares about.
+    hard = [
+        row
+        for row in rows
+        if int(row["is_attack_for_query"]) == 1
+        or (row["label_class"] == "clean" and not int(row.get("s3_unknown", 1)))
+    ]
+    hard_labels = [int(row["is_attack_for_query"]) for row in hard]
+    auc_hard: dict[str, float | None] = {}
+    for name in columns:
+        column = ABLATION_COLUMNS[name][1]
+        auc_hard[name] = roc_auc([float(row.get(column, 0.0)) for row in hard], hard_labels)
+
     per_label: dict[str, dict[str, float]] = {}
     by_label: dict[str, list[dict]] = {}
     for row in rows:
@@ -264,6 +282,8 @@ def _summarise(rows: list[dict], seed: int, mode: str) -> dict:
         "n_instances": len({(row["corpus_id"], row["query_id"]) for row in rows}),
         "n_positives": sum(labels),
         "auc": auc,
+        "auc_hard": auc_hard,
+        "n_hard": len(hard),
         "per_label": per_label,
         "per_family_auc": per_family,
         "samples": samples,
@@ -332,6 +352,12 @@ def _render(summary: dict) -> str:
         f"({summary['s3_parse_fail_rate']:.1%}), S4 {parse['s4_fail']} "
         f"({summary['s4_parse_fail_rate']:.1%}), S5 batches {parse['s5_fail']}"
     )
+    if summary.get("failed_calls"):
+        lines.append(
+            f"- **WARNING: {summary['failed_calls']} call(s) still failed after retries.** "
+            "Their rows are marked `call_failed`; re-run the same command to heal them "
+            "(already-cached calls are not paid twice)."
+        )
     lines.append(
         f"- S3 UNKNOWN answers: {summary['s3_unknown_rate']:.1%}  "
         f"(c_ref={summary['c_ref']:.4f}, source {summary['c_ref_source']})"
@@ -348,6 +374,16 @@ def _render(summary: dict) -> str:
     lines.append("|---|---|---|")
     for name in ABLATION_COLUMNS:
         lines.append(f"| {name} | {ABLATION_COLUMNS[name][0]} | {_fmt(summary['auc'][name])} |")
+    lines.append("")
+    lines.append(
+        f"### Hard subset: poison against the genuine evidence only "
+        f"({summary['n_hard']} candidates, the negatives that did answer the question)"
+    )
+    lines.append("")
+    lines.append("| signal | AUC |")
+    lines.append("|---|---|")
+    for name in ABLATION_COLUMNS:
+        lines.append(f"| {name} | {_fmt(summary['auc_hard'][name])} |")
     lines.append("")
     lines.append("## Mean score by label")
     lines.append("")
@@ -408,11 +444,12 @@ def _console(summary: dict) -> str:
         f"S3 UNKNOWN {summary['s3_unknown_rate']:.1%}   c_ref {summary['c_ref']:.4f} "
         f"({summary['c_ref_source']})",
         "",
-        f"{'signal':<20}{'table':>7}{'AUC':>8}",
+        f"{'signal':<20}{'table':>7}{'AUC':>8}{'AUC hard':>10}",
     ]
     for name in ABLATION_COLUMNS:
         lines.append(
             f"{name:<20}{ABLATION_COLUMNS[name][0]:>7}{_fmt(summary['auc'][name]):>8}"
+            f"{_fmt(summary['auc_hard'][name]):>10}"
         )
     llm = summary["llm"]
     lines.append("")
