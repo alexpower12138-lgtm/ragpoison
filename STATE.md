@@ -1,8 +1,74 @@
 # STATE
 
-last_updated: 2026-10-21 03:10 (pilot run inspected: network failures and an S5 truncation found, both fixed)
+last_updated: 2026-10-21 05:20 (pilot #2 clean; R2 approved)
 current_phase: B
-current_wp: WP5 COMPLETE -> pilot re-run needed
+current_wp: WP5 DONE, R1 PASSED -> R2 (human runs it)
+
+## Pilot #2: clean, and it already answers the main research question
+
+```
+instances 120 (configured 120), rows 1800, positives 120
+parse failures: S3 0.0%, S4 0.0%, S5 batches 0
+S3 UNKNOWN 86.8% (c_ref 0.0968, calib_clean_answered)
+calls 497, cache hits 2587, failures 0
+```
+
+Confirmed afterwards: 0 rows with `call_failed`, 120/120 instances, and a re-run
+with the same table cache issues 0 calls, so the pipeline is complete and
+deterministic.
+
+### The result
+
+| signal | table | AUC | AUC on the hard subset |
+|---|---|---|---|
+| query (S1) | local | 0.961 | **0.495** |
+| cross (S2) | local | 0.594 | 0.717 |
+| conflict (S3) | llm | 0.957 | **0.438** |
+| conflict_majority (S3b) | llm | 0.948 | 0.491 |
+| instruction (S4) | llm | 0.777 | 0.779 |
+| multiview (S5) | llm | 0.984 | 0.794 |
+| ppl (S6) | local | 0.934 | 0.905 |
+
+The hard subset holds the 120 poisoned passages against the 120 *clean passages
+that actually answered the question* - poison against genuine evidence, no easy
+negatives.
+
+This is the paper's central finding and it is exactly the predicted split:
+
+* S1, S3 and S3b look excellent on the whole pool and collapse to chance, or below
+  chance, once the trivially irrelevant candidates are removed. They measure "this
+  passage answers the question", not "this passage is poisoned". S3 is *below*
+  chance at 0.438: it ranks the genuine evidence as more suspicious than the
+  poison, because the genuine passage concentrates the question words slightly more
+  (0.097 against 0.086).
+* S4 and S5 hold up. Per family, instruction scores 1.000 on ATK2, ATK3 and ATK4
+  and 0.521 - chance - on ATK5 and ATK6, exactly as designed, because the stealth
+  attacks carry no traces. multiview stays between 0.958 and 1.000 on all six,
+  so the semantic judge is not fooled by the missing traces. That is H3.
+
+### Caveat to argue in the report
+
+S6 reaches 0.905 on the hard subset, which is too good to be a property of
+pseudo-perplexity. The clean passages here come from a small template bank, so a
+character-trigram model trained on benign text memorises that style, and the poison
+templates are a different distribution. Part of S6's strength is therefore a
+synthetic-data artefact, and the report must say so rather than claim a style
+detector works in general.
+
+### Also settled: the parser ambiguity
+
+Nine of 1080 S5 requests contained a second, revised array. Only three distinct
+batches disagree with their first array, and switching between "first" and "last"
+moves the S5 AUC by 0.0006. The parser now takes the first balanced JSON span in
+the order it appears (it used to take the longest, which made the result depend on
+which revision was wordier), and the count is reported.
+
+## Next action (exact command for human)
+
+```
+python run.py full
+```
+9112 new calls, about 17 CNY at the measured rate, roughly 1.5-3 hours.
 
 ## Pilot run #1 inspection (the first paid pilot)
 
