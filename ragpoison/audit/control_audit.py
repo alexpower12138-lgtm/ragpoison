@@ -128,9 +128,13 @@ def run(
             "other": sum(1 for cell in subset if cell.label == "other") / n,
         }
 
-    # The no-context control is a validity check, not an outcome: it must be
-    # entirely UNKNOWN for the measurement design to hold.
-    external_leak = 1.0 - summary["no_context"]["unknown"]
+    # The no-context control is a validity check on the *corpus*, not on the
+    # model's manners. Every fact here is invented, so the only question is
+    # whether the model can produce the correct value without being given it. A
+    # refusal in prose ("I don't know") is a perfectly good outcome and must not
+    # be counted as a leak; hallucinating some other number is also not a leak,
+    # it is ordinary guessing.
+    leak = summary["no_context"]["correct"]
     payload = {
         "seed": seed,
         "mock": mock,
@@ -138,8 +142,8 @@ def run(
         "prompt_version": prompts.CONTROL_VERSION,
         "n_queries": len(queries),
         "conditions": summary,
-        "external_knowledge_leak": external_leak,
-        "validity_ok": external_leak <= 0.02,
+        "external_knowledge_leak": leak,
+        "validity_ok": leak <= 0.02,
         "llm": client.summary(),
     }
 
@@ -221,15 +225,23 @@ def _render_markdown(payload: dict) -> str:
         "tool behind the API."
     )
     lines.append("")
-    lines.append(f"**answered correctly {none['correct']:.1%}** | UNKNOWN {none['unknown']:.1%} "
-                 f"| answered a target value {none['target']:.1%}")
+    lines.append(
+        f"**answered correctly {none['correct']:.1%}** | refused {none['unknown']:.1%} "
+        f"| gave some other value {none['other']:.1%} | answered a target value {none['target']:.1%}"
+    )
     lines.append("")
     verdict = "PASS" if payload["validity_ok"] else "FAIL"
     lines.append(
         f"**Validity check: {verdict}** - external-knowledge leak "
         f"{payload['external_knowledge_leak']:.1%} (tolerance 2%)."
     )
-    if not payload["validity_ok"]:
+    if payload["validity_ok"]:
+        lines.append("")
+        lines.append(
+            "A refusal in prose counts as success here: the model was not given the value and did "
+            "not produce it. Guessing some other number is not a leak either."
+        )
+    else:
         lines.append("")
         lines.append(
             "A non-zero leak invalidates the measurement: the model is not confined to the "

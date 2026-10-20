@@ -16,6 +16,30 @@ UNKNOWN_TOKEN = "UNKNOWN"
 _STRIP_RE = re.compile(r"[^a-z0-9 ]+")
 _SPACE_RE = re.compile(r"\s+")
 
+#: Refusals that a model writes when it is not told to emit the literal token
+#: UNKNOWN. Without these the abstention metric silently counts refusals as
+#: "other", which is how the no-context control was first mis-scored.
+_REFUSAL_PATTERNS: tuple[str, ...] = (
+    "unknown",
+    "i don't know",
+    "i do not know",
+    "dont know",
+    "do not have that information",
+    "don't have that information",
+    "no information",
+    "does not provide",
+    "do not provide",
+    "not provided",
+    "cannot be determined",
+    "can not be determined",
+    "can't determine",
+    "cannot determine",
+    "unable to determine",
+    "not enough information",
+    "insufficient information",
+    "no answer",
+)
+
 
 def normalize_answer(text: str) -> str:
     """Lowercase, drop punctuation and thousands separators, collapse spaces."""
@@ -25,7 +49,11 @@ def normalize_answer(text: str) -> str:
 
 
 def is_unknown(text: str) -> bool:
-    return normalize_answer(text).startswith("unknown")
+    """True for an explicit UNKNOWN and for the natural-language refusals."""
+    normalized = normalize_answer(text)
+    if not normalized:
+        return True
+    return any(pattern in normalized for pattern in _REFUSAL_PATTERNS)
 
 
 def matches(answer: str, value: str) -> bool:
