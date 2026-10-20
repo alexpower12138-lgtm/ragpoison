@@ -1,8 +1,68 @@
 # STATE
 
-last_updated: 2026-10-21 01:40 (WP5 complete: runner, dry-run budget, AUC report)
+last_updated: 2026-10-21 03:10 (pilot run inspected: network failures and an S5 truncation found, both fixed)
 current_phase: B
-current_wp: WP5 COMPLETE -> R1 pilot (human runs it)
+current_wp: WP5 COMPLETE -> pilot re-run needed
+
+## Pilot run #1 inspection (the first paid pilot)
+
+The run produced plausible numbers, but two real problems were found by reading the
+artefacts rather than the summary.
+
+### 1. 26 network failures (a network drop during the run)
+
+Every one of them is a `ConnectionError` or `ReadTimeout`, distributed as 5 x S3,
+6 x S4, 15 x S5. A failed call is never cached, so it was *not* mistaken for an
+answer, but the rows it should have produced were written as neutral values:
+
+| stage | what a failure became | consequence |
+|---|---|---|
+| S3 | answer UNKNOWN | indistinguishable from a genuine "cannot answer" |
+| S4 | score 0.0 | the passage looks perfectly clean - the worst possible loss |
+| S5 | all flags 0 | the view contributes nothing |
+
+That is why `instruction` scored AUC 0.777, the lowest of the LLM signals: six of
+its zeroes are not judgements. Verified separately that no *cached* answer is an
+error page: all 12162 entries were scanned for html, error wording, empty text and
+zero token counts; the only hits were three S5 responses discussed below.
+
+Fixes: a retry pass over failed calls (two extra rounds), a per-row `call_failed`
+flag, a loud warning in the console and in the report, and the runner prints
+`instances (configured: N)` so a partial table is visible.
+
+### 2. S5 responses were being truncated while the model second-guessed itself
+
+Three of 1080 S5 batches returned a valid array, then `"Wait, I need to
+reconsider..."`, then ran out of the token budget. The parser keeps the first
+array, i.e. the version the model wanted to revise. The prompt now says "Decide
+once. Do not reconsider", the token budget went from 3x to 5x, and the version is
+bumped to `s5_multiview_v2`, which invalidates the S5 cache (about 300 unique
+prompts) - cheap now, expensive after R2.
+
+### 3. A `--limit` run could join two runs
+
+Running with `--limit 6` and then `--limit 2` left both runs' files in the directory
+and the report claimed 106 instances. The runner now clears the target directory's
+`.jsonl` files at the start of every run (safe: local tables rebuild for free and
+LLM answers come from the cache) and prints how many files it cleared.
+
+### Also added: the hard-subset AUC
+
+The headline AUC is easy to inflate: most negatives cannot answer the question at
+all, so a signal that merely detects "this passage answers the question" scores
+well. The report now also gives an AUC computed only over the positives and the
+clean passages that did answer, i.e. poison against genuine evidence.
+
+## Next action (exact command for human)
+
+Re-run the pilot. Only 497 calls are new (S5 was invalidated by the prompt fix),
+about 1.4 CNY, about 6 minutes.
+
+```
+python run.py pilot
+```
+
+Say `pilot done` afterwards.
 
 ## WP5: the experiment runner
 
