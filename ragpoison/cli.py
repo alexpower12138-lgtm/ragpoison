@@ -40,7 +40,6 @@ EXIT_PLANNED = 3
 #: Commands promised by the specification, mapped to the work package that
 #: implements them. Registered now so `--help` documents the full contract.
 PLANNED: dict[str, str] = {
-    "audit": "WP2: attack-validity audits",
     "pilot": "WP5: R1 pilot experiment",
     "full": "WP7: R2 main experiment",
     "replicate": "WP7: R3 seed replication",
@@ -376,6 +375,30 @@ def _scan_for_secrets() -> list[str]:
 
 
 # --------------------------------------------------------------------------- #
+# attack-validity audit (WP2)
+# --------------------------------------------------------------------------- #
+
+
+def cmd_audit(args: argparse.Namespace) -> int:
+    from .audit import retrieval_audit
+
+    stage = args.stage
+    if stage == "retrieval":
+        payload = retrieval_audit.run(seed=args.seed, top_n=args.top_n)
+        print(retrieval_audit.summarize(payload))
+        return EXIT_OK if payload["gate_r"]["passed"] else EXIT_FAILED
+
+    if stage in {"generation", "baseline", "all"}:
+        print(f"audit stage '{stage}' needs the language-model layer and arrives in WP2b.")
+        print("Stage R (retrieval) is available now and costs nothing:")
+        print("    python run.py audit --stage retrieval --seed 42")
+        return EXIT_PLANNED
+
+    print(f"unknown audit stage: {stage}")
+    return EXIT_FAILED
+
+
+# --------------------------------------------------------------------------- #
 # data generation (WP1)
 # --------------------------------------------------------------------------- #
 
@@ -621,6 +644,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     gen.set_defaults(func=cmd_gen_data)
 
+    audit = subparsers.add_parser("audit", help="attack-validity audit (stage R is offline)")
+    audit.add_argument(
+        "--stage",
+        default="retrieval",
+        choices=["retrieval", "generation", "baseline", "all"],
+        help="retrieval (free) | generation (API) | baseline (API) | all",
+    )
+    audit.add_argument("--seed", type=int, default=42, help="bundle seed (default 42)")
+    audit.add_argument("--top-n", type=int, default=None, help="override the detection pool size")
+    audit.set_defaults(func=cmd_audit)
+
     for command in PLANNED:
         stub = subparsers.add_parser(command, help=f"not implemented yet ({PLANNED[command]})")
         stub.add_argument("--config", default=f"{command}.yaml", help=argparse.SUPPRESS)
@@ -629,7 +663,28 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _first_command_token(argv: list[str]) -> str | None:
+    """Return the first non-option token, i.e. the subcommand name."""
+    for token in argv:
+        if token.startswith("-"):
+            if token in {"-h", "--help", "--version"}:
+                return None
+            continue
+        return token
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+
+    # A command that is not implemented yet must explain itself. Going through
+    # argparse first produces "unrecognized arguments" for any flag the stub does
+    # not declare, which reads like a bug in the invocation rather than a missing
+    # work package.
+    planned = _first_command_token(argv)
+    if planned in PLANNED:
+        return _print_planned(planned)
+
     parser = build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "command", None):

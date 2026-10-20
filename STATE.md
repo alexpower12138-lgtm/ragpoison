@@ -1,8 +1,8 @@
 # STATE
 
-last_updated: 2026-10-20 09:10 (WP1 complete)
+last_updated: 2026-10-20 10:05 (WP2 stage R delivered; a data-design problem needs a decision)
 current_phase: B
-current_wp: WP1 (complete) -> WP2 (ready to start)
+current_wp: WP2a (stage R complete) -> decision needed before WP2b
 repo_root: C:\Users\13619\Desktop\notes\courses\compsci764\0728research_project\1020playground\ragpoison
 spec: ..\1020项目计划书_v2.md
 
@@ -85,10 +85,34 @@ identical. V19 confirms seed 43 has the same structure and different content.
 
 ## Blocked / waiting on human
 
-- Nothing blocks WP2. WP2 needs the stored API key (present) and about 50 minutes.
+- DECISION NEEDED before the model stages: the retrieval audit exposed a
+  data-design problem (see "Open issue WP2a-i"). Two candidate fixes are on the
+  table; the corpus composition has to be settled before any API money is spent.
+- Nothing else blocks. WP2 generation/baseline stages need the stored API key
+  (present) and about 50 minutes.
 - If the repository should be published, the human creates an empty GitHub
   repository and provides the HTTPS URL; a credential must be configured at that
   point. Never paste a token into the conversation.
+
+## WP2a result (retrieval audit, offline, free)
+
+Command: `python run.py audit --stage retrieval --seed {42,43}` -> exit 0,
+`GATE R: PASS` on both seeds.
+
+- every poisoned passage reaches the top-15 detection pool in 100% of cells
+- poison reaches the top-5 (i.e. would enter an undefended context) in 96.7-100%
+- clean supporting passage stays in the pool in 100% of cells on seed 42 and
+  96-100% on seed 43
+- outputs: `reports/audit_retrieval_seed{N}.md`, `results/audit_retrieval_seed{N}.json`
+
+**The audit also found a problem with the corpus composition.** In injection=1
+corpora the top-15 pool contains on average 3.6-8.8 poisoned passages that belong
+to *other* queries (ATK1 8.18, ATK4 8.79, ATK5 4.32, ATK2 3.63). Reason: the
+corpus has 400 chunks of which 100 are poisoned (25%), which is nothing like a
+real knowledge base, and the question-echoing families all share one template, so
+they retrieve each other. Consequence: a detector that correctly flags "this is
+poisoned text" would be scored as producing 8 false positives per true positive,
+so precision would be meaningless. This must be fixed before WP2b.
 
 ## Next action (exact command for human)
 
@@ -96,13 +120,12 @@ identical. V19 confirms seed 43 has the same structure and different content.
 python run.py audit --stage retrieval --seed 42
 ```
 
-That command arrives with WP2. Until then the entry point is:
+(works now, free). The model stages are blocked on the corpus-composition
+decision described above; the command that follows it will be
+`python run.py audit --stage generation --seed 42`.
 
-```
-python run.py gen-data --seeds 42 43
-```
-
-Say: start WP2.
+Say: go with option A / option B (see the conversation), or ask for the numbers
+again.
 
 ## Open issues / decisions taken
 
@@ -141,4 +164,17 @@ Say: start WP2.
 - WP1-f: clean passages deliberately mention the entity at least twice and the
   attribute label once. Without that, keyword-stuffed passages win the retrieval
   contest and the clean evidence never reaches the detection pool.
+- WP2a-i (OPEN, needs a decision): corpus composition. With 100 poisoned chunks
+  in a 400-chunk corpus, 25% of the knowledge base is adversarial and foreign
+  poisoned passages fill a third to a half of every retrieval pool. Two fixes:
+  (A) enlarge the clean side (200 distractors -> about 1400, so poison is about
+  6%) and evaluate all 100 queries; (B) run in subsets: a corpus contains poison
+  only for the 25 queries being evaluated, with 600 distractors (poison about
+  3.4%), four subset runs to cover 100 queries. A is a smaller change to code but
+  needs many more distractor passages; B is a smaller corpus but changes the
+  corpus manifests (48 instead of 12) and the instance identity. Either way, the
+  pool must stop being dominated by text that is not an attack on the query.
+- WP2a-ii: `audit --stage {generation,baseline,all}` now says so explicitly and
+  exits 3 instead of producing an argparse error. Unimplemented commands are
+  detected before argument parsing.
 
