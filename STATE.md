@@ -1,8 +1,66 @@
 # STATE
 
-last_updated: 2026-10-21 05:20 (pilot #2 clean; R2 approved)
+last_updated: 2026-10-21 08:40 (R2 complete and valid; redundancy inverts the consensus signals)
 current_phase: B
-current_wp: WP5 DONE, R1 PASSED -> R2 (human runs it)
+current_wp: R2 DONE -> R3 (replication) -> WP6
+
+## R2: valid, and it overturns the pilot's impression
+
+Data checks: 18000 local rows, 18000 LLM rows, 1200 instances (100 queries x 6
+families x 2 injection sizes), 2400 positives (600 pools x 1 or 3), 0 rows with
+`call_failed`, 0 S3/S4 parse failures, 2 partial S5 arrays out of 10800 batches
+(0.02%). Actual spend 6.68 CNY, i.e. the configured price guard overestimates by
+about 2.5x - the measured rate is close to 1.3 CNY per million input tokens.
+
+The pilot had only injection size 1. Splitting the hard subset by injection size
+shows that redundancy changes the problem qualitatively:
+
+| signal | pilot (inj 1 only) | R2 inj=1 | R2 inj=3 |
+|---|---|---|---|
+| instruction (S4) | 0.779 | 0.787 | **0.801** |
+| ppl (S6) | 0.905 | 0.841 | 0.842 |
+| cross (S2) | 0.717 | 0.637 | 0.610 |
+| multiview (S5) | 0.794 | 0.778 | **0.546** |
+| query (S1) | 0.495 | 0.444 | 0.392 |
+| conflict (S3) | 0.438 | 0.380 | 0.377 |
+| conflict_majority (S3b) | 0.491 | 0.489 | **0.021** |
+
+### The finding: multi-injection poisoning inverts consensus detection
+
+Measured, not inferred:
+
+* the poisons of a pool agree with each other - at inj=3 there is a single distinct
+  extracted answer in **533 of 600 pools** (two answers in 58, three in 9);
+* majority-vote support is therefore 3/15 for each poison and 1/15 for the single
+  genuine passage, so s3b = 0.80 for the poison and 0.93 for the evidence;
+* mean s3b on the hard subset: poison 0.775 against evidence 0.929 at inj=3
+  (0.912 against 0.932 at inj=1). The genuine passage becomes the outlier.
+
+An AUC of 0.021 is not "weak", it is close to a perfect inversion: majority-vote
+consensus detection names the one correct passage as the anomaly. This is the
+strongest result the project has produced, and it is the reason the report cannot
+be built on a single-injection pilot.
+
+S5 loses about a quarter of its discrimination for the same reason: its
+`contradiction` view asks whether a passage conflicts with the others about the same
+subject, and three agreeing poisons do not conflict with anything.
+
+What survives is exactly what reads a passage on its own: S4 is unchanged by
+redundancy (0.787 -> 0.801) and S6 likewise. That is H3 with numbers.
+
+### Caveats to carry into WP6
+
+* Positives are clustered 3-per-pool at inj=3, so any confidence interval must be
+  bootstrapped over the 600 pools, not over 2400 rows.
+* S6's strength is partly a synthetic-template artefact, as already recorded.
+* The pilot's multiview figure (0.794) was flattered by having only injection size 1.
+
+## Next action (exact command for human)
+
+```
+python run.py replicate
+```
+10256 calls, about 7 CNY at the measured rate, roughly 1.5-3 hours.
 
 ## Pilot #2: clean, and it already answers the main research question
 
