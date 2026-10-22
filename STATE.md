@@ -1,8 +1,46 @@
 # STATE
 
-last_updated: 2026-10-21 12:30 (WP6 complete: offline ablation, two bugs fixed on the way)
+last_updated: 2026-10-21 14:10 (end-to-end defence stage written; waiting for the paid run)
 current_phase: C
-current_wp: WP6 DONE -> WP8 (dashboard) or the end-to-end defence run
+current_wp: WP7b code complete -> human runs `python run.py defence`
+
+## WP7b: end-to-end defence
+
+`python run.py defence` closes the gap WP6 leaves open. It filters the pool with a
+configuration from the ablation matrix, then generates an answer from what is left
+with the *same* prompt the baseline used, and classifies the reply. That answers the
+question the ablation cannot: does the attack still work after filtering, and did the
+filter also remove what the model needed to answer.
+
+Design points that make the comparison honest:
+
+* `gen_v1_plain`, the measurement prompt. The guarded prompt would bundle a second
+  defence into the treatment.
+* **C0 is free and is the reference**: with no defence the context is the plain
+  top-k, the request is byte-identical to the baseline audit's, and the cache answers
+  all 840 of them. The dry run confirms 840/840 cached.
+* pooled filtering means filtered contexts collapse: 5040 generations are only
+  1657 unique prompts and 753 of those are unpaid, because many configurations
+  produce the same surviving set. The whole stage costs under 1 CNY.
+* an empty pool is asked with the no-context prompt (the stage-C control), which is
+  itself mostly cached.
+
+Configurations carried forward: C0, C1, C4, C7, C8, C8l. C1 is included on purpose
+as the case where a high clean_rate comes from cutting too much.
+
+Outputs: `results/defence_seed{N}.json`,
+`results/defence_seed{N}_cells.jsonl`, `reports/defence_seed{N}.md`. The report gives
+ASR, correct rate, abstention, poison in context, refills, abstentions, Δ against C0,
+per-family and per-injection breakdowns, and a McNemar test on "the attack still
+worked".
+
+## Next action (exact command for human)
+
+```
+python run.py defence
+```
+753 paid generations, under 1 CNY, a few minutes. Seed 42 only; add `--seeds 42 43`
+for the replication (1664 paid generations in total).
 
 ## WP6: the offline ablation
 
