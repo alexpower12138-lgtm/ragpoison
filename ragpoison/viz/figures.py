@@ -166,9 +166,12 @@ def export_all(seed: int = 42, config_id: str = "C8l") -> list[str]:
         import json
 
         entries = json.loads(index_path.read_text(encoding="utf-8"))
+        # Total tokens against corpus recall, not tokens per chunk: a policy that scans
+        # a fifth of the corpus at the same per-chunk price is cheap in total, and the
+        # per-chunk view hides the coverage dimension that H4 is actually about.
         points = [
             (
-                float(entry.get("tokens_per_chunk") or 0.0),
+                float(entry.get("tokens_used") or 0.0) / 1000.0,
                 float(entry.get("recall") or 0.0),
                 str(entry.get("policy") or entry.get("scan_id")),
             )
@@ -179,8 +182,8 @@ def export_all(seed: int = 42, config_id: str = "C8l") -> list[str]:
             save(
                 charts.scatter(
                     points,
-                    title="Corpus audit: cost against recall, one point per policy",
-                    xlabel="tokens per chunk judged",
+                    title="Corpus audit: total cost against corpus recall",
+                    xlabel="thousand tokens spent",
                     ylabel="recall of poisoned chunks",
                     leader=True,
                 ),
