@@ -35,6 +35,33 @@ _REFUSAL_PATTERNS: tuple[str, ...] = (
     "does not provide",
     "do not provide",
     "not provided",
+    # The defence stage produced a large family of refusals written as a remark
+    # about the context rather than about the model: "The context does not mention
+    # Aldren Systems". Those were counted as wrong answers, which understated the
+    # abstention rate of the aggressive filters from 57% to 17%. The pattern is
+    # "does not <verb of reporting>", plus the passive forms.
+    "does not mention",
+    "does not record",
+    "does not state",
+    "does not say",
+    "does not give",
+    "does not contain",
+    "does not include",
+    "does not specify",
+    "does not list",
+    "does not appear",
+    "is not mentioned",
+    "is not stated",
+    "is not recorded",
+    "is not specified",
+    "not mentioned",
+    "not stated",
+    "not recorded",
+    "not specified",
+    "cannot answer",
+    "can not answer",
+    "unable to answer",
+    "cannot be answered",
     "cannot be determined",
     "can not be determined",
     "cant determine",

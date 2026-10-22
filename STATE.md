@@ -1,46 +1,76 @@
 # STATE
 
-last_updated: 2026-10-21 14:10 (end-to-end defence stage written; waiting for the paid run)
+last_updated: 2026-10-21 16:20 (end-to-end defence measured; the offline ranking reverses)
 current_phase: C
-current_wp: WP7b code complete -> human runs `python run.py defence`
+current_wp: WP7b DONE on seed 42 -> seed 43 replication (about 1 CNY)
 
-## WP7b: end-to-end defence
+## WP7b result: the offline ranking reverses end to end
 
-`python run.py defence` closes the gap WP6 leaves open. It filters the pool with a
-configuration from the ablation matrix, then generates an answer from what is left
-with the *same* prompt the baseline used, and classifies the reply. That answers the
-question the ablation cannot: does the attack still work after filtering, and did the
-filter also remove what the model needed to answer.
+Seed 42, 840 test instances per configuration, all with the same generation prompt.
+`python run.py defence`, 753 paid generations, about 0.6 CNY.
 
-Design points that make the comparison honest:
+| config | ASR | correct | UNKNOWN | other | dASR vs C0 | dcorrect vs C0 |
+|---|---|---|---|---|---|---|
+| C0 no defence | 0.693 | 0.307 | 0.000 | 0.000 | - | - |
+| C1 S1 only | 0.462 | 0.326 | 0.192 | 0.020 | +0.231 | +0.019 |
+| **C4 S4 only** | **0.279** | **0.707** | 0.014 | 0.000 | **+0.414** | **+0.400** |
+| C7 S4+S5 | 0.279 | 0.586 | 0.127 | 0.008 | +0.414 | +0.279 |
+| C8 all, mean | 0.154 | 0.268 | 0.532 | 0.046 | +0.539 | **-0.039** |
+| C8l all, logistic | 0.092 | 0.381 | 0.490 | 0.037 | +0.601 | +0.074 |
 
-* `gen_v1_plain`, the measurement prompt. The guarded prompt would bundle a second
-  defence into the treatment.
-* **C0 is free and is the reference**: with no defence the context is the plain
-  top-k, the request is byte-identical to the baseline audit's, and the cache answers
-  all 840 of them. The dry run confirms 840/840 cached.
-* pooled filtering means filtered contexts collapse: 5040 generations are only
-  1657 unique prompts and 753 of those are unpaid, because many configurations
-  produce the same surviving set. The whole stage costs under 1 CNY.
-* an empty pool is asked with the no-context prompt (the stage-C control), which is
-  itself mostly cached.
+C4 - the instruction-trace signal on its own - is the best defence: it cuts the
+attack from 69% to 28% while *more than doubling* the share of answers that are
+correct, and it abstains on 1.4% of instances. The fusions reach a lower ASR only by
+abstaining on half the instances, and C8 answers correctly *less often than no
+defence at all*.
 
-Configurations carried forward: C0, C1, C4, C7, C8, C8l. C1 is included on purpose
-as the case where a high clean_rate comes from cutting too much.
+That inverts the offline ranking completely: clean_rate put C8l first (0.892) and C4
+fourth (0.545). The offline metric rewards removing everything, and the aggressive
+configurations buy their clean_rate by deleting the evidence. H2 therefore holds for
+detection and fails for utility, which the plan allows for and the report must say
+plainly.
 
-Outputs: `results/defence_seed{N}.json`,
-`results/defence_seed{N}_cells.jsonl`, `reports/defence_seed{N}.md`. The report gives
-ASR, correct rate, abstention, poison in context, refills, abstentions, Δ against C0,
-per-family and per-injection breakdowns, and a McNemar test on "the attack still
-worked".
+By attack family, seed 42:
+
+| config | ATK1 | ATK2 | ATK3 | ATK4 | ATK5 | ATK6 |
+|---|---|---|---|---|---|---|
+| C0 | 0.87 | 0.83 | 0.76 | 0.68 | 0.66 | 0.36 |
+| C1 | 0.01 | 0.69 | 0.74 | 0.00 | 0.70 | 0.64 |
+| C4 | 0.65 | 0.00 | 0.00 | 0.00 | 0.67 | 0.35 |
+| C8 | 0.12 | 0.00 | 0.00 | 0.00 | 0.61 | 0.19 |
+| C8l | 0.06 | 0.00 | 0.00 | 0.00 | 0.41 | 0.09 |
+
+* C4 demolishes the three attacks that carry traces (ATK2, ATK3, ATK4 -> 0.00) and is
+  blind to ATK5 and ATK6, exactly as the per-family AUC predicted.
+* **ATK5 resists every configuration**; even the logistic fusion only reaches 0.41.
+  The stealth assertion is the hardest attack in the benchmark.
+* **C1 is worse than no defence on ATK6**: 0.36 under C0, 0.64 under C1. Filtering by
+  retrieval rank removes the genuine passage and leaves the hedged poison standing.
+  A defence that helps the attacker is the clearest possible argument for measuring
+  end to end instead of trusting a detection metric.
+
+Paired tests against C0: C4 wins 352 pools and loses 4; C8l wins 518 and loses 13.
+
+### A classifier gap found by looking at the raw answers
+
+The first run reported C8's "other" at 40.7% and its abstention at 17.1%. The raw
+answers showed almost all of that to be refusals phrased as remarks about the
+context: "The context does not mention Aldren Systems." `is_unknown` did not know
+that family of phrasings, so abstentions were being counted as wrong answers. With
+the pattern added, C8's abstention is 53.2% and C4's is 1.4%.
+
+Checked before accepting the change: re-classifying every stored cell shows **zero
+label changes in the baseline table** (both seeds) and identical Gate G and control
+numbers, so nothing already reported moves. Nine cells elsewhere changed from
+`other` to `unknown`, and the generation and control stages were re-run (all cached)
+so the stored artefacts match the classifier.
 
 ## Next action (exact command for human)
 
 ```
-python run.py defence
+python run.py defence --seeds 43
 ```
-753 paid generations, under 1 CNY, a few minutes. Seed 42 only; add `--seeds 42 43`
-for the replication (1664 paid generations in total).
+About 900 paid generations, about 0.6 CNY: the replication of the reversal.
 
 ## WP6: the offline ablation
 
