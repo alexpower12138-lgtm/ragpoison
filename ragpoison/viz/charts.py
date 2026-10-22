@@ -212,26 +212,69 @@ def scatter(
     title: str = "",
     xlabel: str = "",
     ylabel: str = "",
-    stagger: bool = True,
+    leader: bool = True,
 ) -> "plt.Figure":
+    """A labelled scatter whose labels are attached, not merely nearby.
+
+    The first version assigned a label offset by the point's position in the input
+    list, which has nothing to do with where the point sits, so labels drifted onto
+    their neighbours. Here the placement is derived from geometry: points sharing an x
+    value are ordered by y and fanned away from each other, and every label is joined
+    to its own marker by a thin connector. The connector is what makes the association
+    unambiguous even when the label has to travel.
+    """
     if not points:
         return empty(title or "No data")
-    figure, ax = plt.subplots(figsize=(6.4, 3.8), dpi=110)
+    figure, ax = plt.subplots(figsize=(6.8, 4.0), dpi=110)
     _style(ax)
     xs = [point[0] for point in points]
     ys = [point[1] for point in points]
-    ax.scatter(xs, ys, color=COOL, s=42, alpha=0.85)
-    # Room at the edges, so a label next to the last point is not clipped away.
-    ax.margins(x=0.12, y=0.12)
-    # Configurations that share an x value (the same number of API calls) were
-    # stacking their labels on top of each other. Fan the labels out vertically
-    # instead: an unreadable label is worse than no label.
-    offsets = [(8, 6), (8, -14), (8, 20), (-34, 6), (-34, -14)]
-    for index, (x, y, label) in enumerate(points):
-        offset = offsets[index % len(offsets)]
-        ax.annotate(
-            label, (x, y), textcoords="offset points", xytext=offset, fontsize=8, color=INK,
-        )
+    ax.scatter(xs, ys, color=COOL, s=46, alpha=0.9, zorder=3)
+    # Room at the edges: a label beside the last point must not be clipped away.
+    ax.margins(x=0.16, y=0.13)
+
+    groups: dict[float, list[tuple[float, float, str]]] = {}
+    for point in points:
+        groups.setdefault(point[0], []).append(point)
+
+    for x_value, group in groups.items():
+        ordered = sorted(group, key=lambda item: -item[1])
+        count = len(ordered)
+        for index, (_, y_value, label) in enumerate(ordered):
+            # Fan the labels of one x value vertically around their common column, in
+            # rank order, so the top point always gets the top label.
+            offset_y = (index - (count - 1) / 2.0) * -19.0
+            offset_x = 13.0
+            if leader:
+                ax.annotate(
+                    label,
+                    (x_value, y_value),
+                    textcoords="offset points",
+                    xytext=(offset_x, offset_y),
+                    fontsize=8,
+                    color=INK,
+                    annotation_clip=False,
+                    zorder=4,
+                    arrowprops=dict(
+                        arrowstyle="-",
+                        color=MUTED,
+                        linewidth=0.7,
+                        shrinkA=1,
+                        shrinkB=5,
+                        alpha=0.85,
+                    ),
+                )
+            else:
+                ax.annotate(
+                    label,
+                    (x_value, y_value),
+                    textcoords="offset points",
+                    xytext=(offset_x, offset_y),
+                    fontsize=8,
+                    color=INK,
+                    annotation_clip=False,
+                )
+
     ax.set_title(title, color=INK, fontsize=11, loc="left")
     ax.set_xlabel(xlabel, color=MUTED, fontsize=9)
     ax.set_ylabel(ylabel, color=MUTED, fontsize=9)
