@@ -1,3 +1,9 @@
+# STATE
+
+last_updated: 2026-10-22 23:30 (the seven acceptance gaps closed)
+current_phase: D
+current_wp: WP0-WP8 audited and gap-free -> WP9 (optional) or WP10 (report)
+
 ## Acceptance gaps closed (G1-G6)
 
 A read-only audit against section 2.5 of the specification found seven items that were
