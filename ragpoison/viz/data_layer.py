@@ -133,6 +133,63 @@ def ledger(limit: int = 400) -> list[dict]:
     return _tail_jsonl(repo_path("logs", "llm_calls.jsonl"), limit)
 
 
+def ledger_totals() -> dict:
+    """Scan the whole ledger, not just the tail.
+
+    The tail is not representative: 400 consecutive rows can all belong to one
+    stage, so a summary built from them reported a single stage and that stage's
+    tokens as the project total. Every line is walked instead (about 125000, under a
+    second), and the caller is expected to cache the result.
+    """
+    path = repo_path("logs", "llm_calls.jsonl")
+    if not path.exists():
+        return {}
+    total = paid = hits = errors = 0
+    tokens_in = tokens_out = 0
+    paid_tokens_in = paid_tokens_out = 0
+    by_stage: dict[str, int] = {}
+    paid_by_stage: dict[str, int] = {}
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            total += 1
+            hit = bool(row.get("cache_hit"))
+            hits += hit
+            paid += not hit
+            if row.get("ok") is False:
+                errors += 1
+            prompt = int(row.get("prompt_tokens") or 0)
+            completion = int(row.get("completion_tokens") or 0)
+            tokens_in += prompt
+            tokens_out += completion
+            if not hit:
+                paid_tokens_in += prompt
+                paid_tokens_out += completion
+            stage = str(row.get("stage") or "?")
+            by_stage[stage] = by_stage.get(stage, 0) + 1
+            if not hit:
+                paid_by_stage[stage] = paid_by_stage.get(stage, 0) + 1
+    return {
+        "rows": total,
+        "paid": paid,
+        "cache_hits": hits,
+        "cache_rate": hits / total if total else 0.0,
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "paid_tokens_in": paid_tokens_in,
+        "paid_tokens_out": paid_tokens_out,
+        "errors": errors,
+        "by_stage": dict(sorted(by_stage.items(), key=lambda item: -item[1])),
+        "paid_by_stage": dict(sorted(paid_by_stage.items(), key=lambda item: -item[1])),
+    }
+
+
 def ledger_summary(rows: list[dict]) -> dict:
     total = len(rows)
     paid = sum(1 for row in rows if not row.get("cache_hit"))
@@ -330,8 +387,60 @@ def signal_attack(seed: int) -> dict:
 # --------------------------------------------------------------------------- #
 
 
-def query_index(seed: int) -> list[str]:
+def hard_by_family(seed: int) -> dict[str, dict[str, float | None]]:
+    """AUC per signal per attack family, on the hard subset only.
+
+    ``run_*.json`` stores the hard-subset AUC once for the whole seed and the
+    per-family AUC for the whole pool, so the cross of the two does not exist on
+    disk. It is recomputed here: poison against the clean passages that actually
+    answered the question, per family. That is the comparison which shows S1 and S3
+    collapsing while S4 survives.
+    """
+    from ..evaluation.metrics import roc_auc
+    from ..signals.base import ABLATION_COLUMNS
+    from ..signals.load import hard_subset
+
+    rows = load_joined(seed)
+    if not rows:
+        return {}
+    hard = hard_subset(rows)
+    if not hard:
+        return {}
+    out: dict[str, dict[str, float | None]] = {}
+    for family in sorted({row["attack_family"] for row in hard}):
+        subset = [row for row in hard if row["attack_family"] == family]
+        labels = [int(row["is_attack_for_query"]) for row in subset]
+        out[family] = {
+            name: roc_auc([float(row.get(column, 0.0)) for row in subset], labels)
+            for name, (_table, column) in ABLATION_COLUMNS.items()
+        }
+    return out
+
+
+def defence_pool(seed: int, corpus_id: str, query_id: str) -> list[dict]:
+    """What each defence configuration actually answered for one pool."""
+    out = []
+    path = repo_path("results", f"defence_seed{seed}_cells.jsonl")
+    if not path.exists():
+        return out
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get("corpus_id") == corpus_id and row.get("query_id") == query_id:
+                out.append(row)
+    return sorted(out, key=lambda row: row.get("config", ""))
+
+
+def query_index(seed: int, split: str | None = None) -> list[str]:
     rows = load_joined(seed) if repo_path("results", "signals", f"seed{seed}").exists() else []
+    if split:
+        rows = [row for row in rows if row.get("split") == split]
     seen = []
     for row in rows:
         key = f"{row['attack_family']}_inj{row['injection']}_{row['query_id']}"
@@ -454,7 +563,7 @@ def cost_units(signals: list[str]) -> int:
     return sum(SIGNAL_COST.get(name, 0) for name in signals)
 
 
-def sweep(seed: int, config_id: str, points: int = 40) -> dict:
+def sweep(seed: int, config_id: str, points: int | None = None) -> dict:
     """F1 and the precision-recall curve against the threshold, for one configuration.
 
     Computed here rather than stored, because it is a property of one configuration
@@ -487,7 +596,10 @@ def sweep(seed: int, config_id: str, points: int = 40) -> dict:
     precisions: list[float] = []
     recalls: list[float] = []
     tp = fp = 0
-    step = max(1, len(scored) // points)
+    # The whole path, in threshold order. Sampling it by list index put most points
+    # at the low-threshold end, which drew a precision-recall "curve" as a cloud with
+    # a vertical pile at recall 1.0. 12600 points cost nothing to keep.
+    step = 1 if points is None else max(1, len(scored) // points)
     for index, (score, label) in enumerate(scored):
         if label:
             tp += 1

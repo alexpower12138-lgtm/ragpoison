@@ -51,6 +51,7 @@ def heatmap(
     vmax: float | None = None,
     fmt: str = "{:.2f}",
     annotate: bool = True,
+    label_contrast: str = "midpoint",
 ) -> "plt.Figure":
     if not matrix or not row_labels or not column_labels:
         return empty(title or "No data")
@@ -70,7 +71,12 @@ def heatmap(
         for row in range(data.shape[0]):
             for column in range(data.shape[1]):
                 value = data[row, column]
-                colour = "white" if value > midpoint else INK
+                if label_contrast == "auto":
+                    rgba = image.cmap(image.norm(value))
+                    luminance = 0.299 * rgba[0] + 0.587 * rgba[1] + 0.114 * rgba[2]
+                    colour = INK if luminance > 0.55 else "white"
+                else:
+                    colour = "white" if value > midpoint else INK
                 ax.text(
                     column, row, fmt.format(value), ha="center", va="center",
                     color=colour, fontsize=8,
@@ -127,6 +133,54 @@ def bars(
     return figure
 
 
+def grouped_bars(
+    labels: list[str],
+    series: dict[str, list[float]],
+    *,
+    title: str = "",
+    xlim: tuple[float, float] | None = None,
+    colours: dict[str, str] | None = None,
+) -> "plt.Figure":
+    """Two or more bars per label, so a comparison is actually drawn.
+
+    The previous version of the per-signal chart carried a title promising whole-pool
+    bars beside hard-subset bars and plotted only one series. A comparison that is
+    named in the title has to exist in the picture.
+    """
+    names = list(series)
+    if not labels or not names:
+        return empty(title or "No data")
+    height = max(2.4, 0.5 * len(labels) + 1.2)
+    figure, ax = plt.subplots(figsize=(7.6, height), dpi=110)
+    _style(ax)
+    positions = np.arange(len(labels))
+    width = 0.8 / len(names)
+    palette = {"whole pool": MUTED, "hard subset": ACCENT}
+    for index, name in enumerate(names):
+        values = series[name]
+        colour = (colours or {}).get(name, palette.get(name, COOL))
+        ax.barh(
+            positions + (index - (len(names) - 1) / 2) * width,
+            values,
+            height=width * 0.92,
+            color=colour,
+            label=name,
+        )
+    ax.set_yticks([float(value) for value in positions])
+    ax.set_yticklabels(labels, color=INK, fontsize=9)
+    ax.invert_yaxis()
+    if xlim:
+        ax.set_xlim(*xlim)
+    ax.axvline(0.5, color=MUTED, linewidth=1.0, linestyle="--")
+    ax.legend(
+        frameon=False, fontsize=9, loc="upper center",
+        bbox_to_anchor=(0.5, -0.07), ncol=len(names),
+    )
+    ax.set_title(title, color=INK, fontsize=11, loc="left")
+    figure.tight_layout()
+    return figure
+
+
 def line(
     series: dict[str, tuple[list[float], list[float]]],
     *,
@@ -158,16 +212,26 @@ def scatter(
     title: str = "",
     xlabel: str = "",
     ylabel: str = "",
+    stagger: bool = True,
 ) -> "plt.Figure":
     if not points:
         return empty(title or "No data")
-    figure, ax = plt.subplots(figsize=(6.4, 3.6), dpi=110)
+    figure, ax = plt.subplots(figsize=(6.4, 3.8), dpi=110)
     _style(ax)
     xs = [point[0] for point in points]
     ys = [point[1] for point in points]
     ax.scatter(xs, ys, color=COOL, s=42, alpha=0.85)
-    for x, y, label in points:
-        ax.annotate(label, (x, y), textcoords="offset points", xytext=(5, 5), fontsize=8, color=INK)
+    # Room at the edges, so a label next to the last point is not clipped away.
+    ax.margins(x=0.12, y=0.12)
+    # Configurations that share an x value (the same number of API calls) were
+    # stacking their labels on top of each other. Fan the labels out vertically
+    # instead: an unreadable label is worse than no label.
+    offsets = [(8, 6), (8, -14), (8, 20), (-34, 6), (-34, -14)]
+    for index, (x, y, label) in enumerate(points):
+        offset = offsets[index % len(offsets)]
+        ax.annotate(
+            label, (x, y), textcoords="offset points", xytext=offset, fontsize=8, color=INK,
+        )
     ax.set_title(title, color=INK, fontsize=11, loc="left")
     ax.set_xlabel(xlabel, color=MUTED, fontsize=9)
     ax.set_ylabel(ylabel, color=MUTED, fontsize=9)

@@ -134,6 +134,16 @@ class _Stub:
         return _Section(self)
 
     # -- layout -----------------------------------------------------------
+    def cache_data(self, *args, **kwargs):
+        """Decorator-compatible no-op: the double caches nothing, it just wraps."""
+
+        def decorator(function):
+            return function
+
+        if args and callable(args[0]) and not kwargs:
+            return args[0]
+        return decorator
+
     def set_page_config(self, *args, **kwargs):
         self._hit("set_page_config", *args)
 

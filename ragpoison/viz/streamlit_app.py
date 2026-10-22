@@ -1,15 +1,25 @@
 """The five-tab dashboard. Layout only.
 
-Every number on these pages comes from ``data_layer`` and every figure from
-``charts``; nothing here computes a metric. That separation exists because the
-browser is not available during development: the data and chart layers are exercised
-by the self-test and by ``run.py ui-check``, so what remains here is only arrangement.
+Every number comes from ``data_layer`` and every figure from ``charts``; nothing here
+computes a metric. That separation exists because the browser is not available during
+development, so the data and chart layers are exercised by the self-test and by
+``run.py ui-check``, and only the arrangement is left here.
+
+Two rules this file tries to keep:
+
+* **a label must not promise what the picture does not show** - the per-signal chart
+  used to advertise a whole-pool versus hard-subset comparison and plot one series;
+* **a number must say what population it covers** - the ledger cards used to show a
+  tail window as if it were the project total.
 """
 
 from __future__ import annotations
 
+import math
+
 import streamlit as st
 
+from ragpoison.signals.base import ABLATION_COLUMNS
 from ragpoison.viz import charts, data_layer
 
 st.set_page_config(page_title="RAG poisoning detection", layout="wide")
@@ -25,13 +35,37 @@ def _seeds() -> list[int]:
     return data_layer.available_seeds() or [42]
 
 
+def _sigmoid(value: float) -> float:
+    if value < -60.0:
+        return 0.0
+    if value > 60.0:
+        return 1.0
+    return 1.0 / (1.0 + math.exp(-value))
+
+
+@st.cache_data(show_spinner=False)
+def _totals(seed: int) -> dict:
+    return data_layer.ledger_totals()
+
+
+@st.cache_data(show_spinner=False)
+def _sweep(seed: int, config_id: str) -> dict:
+    return data_layer.sweep(seed, config_id)
+
+
+@st.cache_data(show_spinner=False)
+def _hard_family(seed: int) -> dict:
+    return data_layer.hard_by_family(seed)
+
+
 with st.sidebar:
     st.header("Scope")
     seed = st.selectbox("Knowledge base (seed)", _seeds())
-    mode = st.selectbox("Run", data_layer.available_runs(seed) or ["-"])
+    run_mode = data_layer.run_report(seed).get("_mode", "-")
     st.caption(
-        "Seed 42 and seed 43 are independent corpora generated with no shared facts. "
-        "A finding that holds on both is a finding."
+        f"Per-signal and per-family figures come from the **{run_mode}** run of seed {seed}. "
+        "Seed 42 and seed 43 are independent corpora with no shared facts; a finding that "
+        "holds on both is a finding."
     )
 
 tabs = st.tabs(
@@ -46,35 +80,82 @@ tabs = st.tabs(
 
 
 # --------------------------------------------------------------------------- #
-# Tab 1
+# Tab 1 - prompt inspector
 # --------------------------------------------------------------------------- #
 with tabs[0]:
     st.subheader("Prompt inspector")
-    rows = data_layer.ledger(400)
-    summary = data_layer.ledger_summary(rows)
-    if not rows:
+    totals = _totals(seed)
+    if not totals:
         st.info("No ledger yet. Run any paid stage first.")
     else:
         columns = st.columns(4)
-        columns[0].metric("calls (last 400)", summary["rows"])
-        columns[1].metric("cache hit rate", f"{summary['cache_rate']:.1%}")
-        columns[2].metric("tokens in / out", f"{summary['tokens_in']:,} / {summary['tokens_out']:,}")
-        columns[3].metric("errors", summary["errors"])
-        st.caption(
-            f"{summary['paid']} of these were paid and {summary['cache_hits']} were served "
-            "from the answer cache."
+        columns[0].metric("calls (whole ledger)", f"{totals['rows']:,}")
+        columns[1].metric("cache hit rate (whole ledger)", f"{totals['cache_rate']:.1%}")
+        columns[2].metric(
+            "paid tokens in / out",
+            f"{totals['paid_tokens_in']:,} / {totals['paid_tokens_out']:,}",
         )
-        with st.expander("Calls by stage"):
-            st.write(summary["by_stage"])
-        stage_counts = ", ".join(f"{name}: {count}" for name, count in summary["by_stage"].items())
-        st.caption(stage_counts)
+        columns[3].metric("errors", totals["errors"])
+        st.caption(
+            f"Every figure on this row covers all {totals['rows']:,} ledger rows, of which "
+            f"{totals['paid']:,} were paid. The token figures count only the paid calls, so "
+            f"they are the ones that cost money; counting cached calls too would report "
+            f"{totals['tokens_in']:,} input tokens for a fraction of the cost."
+        )
+
+        left, right = st.columns([1, 1])
+        with left:
+            st.markdown("##### Calls by stage (whole ledger)")
+            st.dataframe(
+                [
+                    {"stage": name, "calls": count, "paid": totals["paid_by_stage"].get(name, 0)}
+                    for name, count in totals["by_stage"].items()
+                ],
+                width="stretch",
+                hide_index=True,
+            )
+        with right:
+            st.markdown("##### Recent calls")
+            recent = data_layer.ledger(400)
+            stages = ["all"] + list(
+                dict.fromkeys(row.get("stage") for row in recent if row.get("stage"))
+            )
+            chosen_stage = st.selectbox("filter by stage", stages, index=0)
+            only_paid = st.radio(
+                "cache", ["all", "paid only", "cache hits only"], horizontal=True, index=0
+            )
+            filtered = [
+                row
+                for row in recent
+                if (chosen_stage == "all" or row.get("stage") == chosen_stage)
+                and (
+                    only_paid == "all"
+                    or (only_paid == "paid only" and not row.get("cache_hit"))
+                    or (only_paid == "cache hits only" and row.get("cache_hit"))
+                )
+            ]
+            st.caption(f"{len(filtered)} of the last {len(recent)} calls match.")
+            st.dataframe(
+                [
+                    {
+                        "stage": row.get("stage"),
+                        "cached": "hit" if row.get("cache_hit") else "paid",
+                        "in": row.get("prompt_tokens"),
+                        "out": row.get("completion_tokens"),
+                        "ms": row.get("latency_ms"),
+                        "tag": str(row.get("tag") or "")[:40],
+                    }
+                    for row in filtered[-100:]
+                ],
+                width="stretch",
+                hide_index=True,
+            )
 
         st.markdown("#### Rebuild one request and check it against the paid cache")
         st.caption(
-            "The ledger stores tokens and cost, not prompt text. Instead of showing a "
-            "stored copy, this reconstructs the request from the pipeline and looks the "
-            "hash up in the cache. A hit proves the prompt the code produces today is the "
-            "one that was paid for."
+            "The ledger stores tokens and cost, not prompt text. Instead of showing a stored "
+            "copy, this reconstructs the request from the pipeline and looks the hash up in the "
+            "cache. A hit proves the prompt the code produces today is the one that was paid for."
         )
         try:
             from ragpoison.datagen.corpora import iter_query_corpora
@@ -92,9 +173,7 @@ with tabs[0]:
                 "stage",
                 ["audit_baseline_plain", "s3_answer", "s4_instruction", "s5_relevance"],
             )
-            detail = data_layer.query_detail(
-                seed, corpus_id.replace("_q_", "_inj1_", 1) if False else corpus_id
-            )
+            detail = data_layer.query_detail(seed, corpus_id)
             doc_id = None
             if stage != "audit_baseline_plain" and detail.get("rows"):
                 doc_id = right.selectbox("document", [row["doc_id"] for row in detail["rows"]])
@@ -119,7 +198,7 @@ with tabs[0]:
 
 
 # --------------------------------------------------------------------------- #
-# Tab 2
+# Tab 2 - detection
 # --------------------------------------------------------------------------- #
 with tabs[1]:
     st.subheader("Detection")
@@ -128,7 +207,9 @@ with tabs[1]:
         st.info("No ablation summary. Run `python run.py refusion`.")
     else:
         names = [row["config"] for row in rows]
-        chosen = st.selectbox("Configuration", names, index=names.index("C8l") if "C8l" in names else 0)
+        chosen = st.selectbox(
+            "Configuration", names, index=names.index("C8l") if "C8l" in names else 0
+        )
         row = next(item for item in rows if item["config"] == chosen)
         cards = st.columns(6)
         for column, key, label in zip(
@@ -141,8 +222,8 @@ with tabs[1]:
         st.caption(
             f"clean_rate {row.get('clean_rate', 0):.3f} "
             f"[{row.get('clean_rate_lo', 0):.3f}, {row.get('clean_rate_hi', 0):.3f}] "
-            f"over {int(row.get('n_pools_scored') or 0)} pools; "
-            f"threshold {row.get('tau', 0):.4f}, FPR budget 5%."
+            f"over {int(row.get('n_pools_scored') or 0)} pools; threshold "
+            f"{row.get('tau', 0):.4f}, false-positive budget 5%."
         )
 
         left, right = st.columns([1, 2])
@@ -171,7 +252,47 @@ with tabs[1]:
                 clear_figure=True,
             )
 
-        curve = data_layer.sweep(seed, chosen)
+        st.markdown("#### Per-signal AUC: whole pool against the hard subset")
+        report = data_layer.run_report(seed)
+        if report:
+            signals = list(report.get("auc", {}))
+            whole = [float(report["auc"].get(name) or 0.5) for name in signals]
+            hard = [float(report["auc_hard"].get(name) or 0.5) for name in signals]
+            st.pyplot(
+                charts.grouped_bars(
+                    [data_layer.SHORT.get(name, name) for name in signals],
+                    {"whole pool": whole, "hard subset": hard},
+                    title="AUC per signal: whole pool (grey) against poison-versus-evidence (orange)",
+                    xlim=(0, 1),
+                ),
+                clear_figure=True,
+            )
+            st.caption(
+                "The hard subset keeps only the poisoned passage and the clean passages that "
+                "actually answered the question, so no trivially irrelevant negative is left. A "
+                "signal that merely detects 'this passage answers the question' scores well on "
+                "the whole pool and collapses here."
+            )
+            st.dataframe(
+                [
+                    {
+                        "signal": data_layer.SHORT.get(name, name),
+                        "whole pool": round(whole[index], 3),
+                        "hard subset": round(hard[index], 3),
+                        "difference": round(hard[index] - whole[index], 3),
+                    }
+                    for index, name in enumerate(signals)
+                ],
+                width="stretch",
+                hide_index=True,
+            )
+            st.caption(
+                f"{report.get('n_hard')} candidates in the hard subset out of "
+                f"{report.get('n_rows')} rows. A negative difference means the signal was "
+                "being carried by the easy negatives."
+            )
+
+        curve = _sweep(seed, chosen)
         if curve:
             left, right = st.columns(2)
             with left:
@@ -187,8 +308,8 @@ with tabs[1]:
                 )
             with right:
                 st.pyplot(
-                    charts.scatter(
-                        list(zip(curve["recall"], curve["precision"], [""] * len(curve["recall"]))),
+                    charts.line(
+                        {chosen: (curve["recall"], curve["precision"])},
                         title=f"Precision-recall curve - {chosen}",
                         xlabel="recall",
                         ylabel="precision",
@@ -196,41 +317,22 @@ with tabs[1]:
                     clear_figure=True,
                 )
             st.caption(
-                f"The dashed line marks the operating threshold (benign false-positive "
-                f"rate held at 5%). F1 there is {curve['f1_at_operating']:.3f}; the curve "
-                "shows what a different operating point would buy."
+                f"The dashed line marks the operating threshold (benign false-positive rate held "
+                f"at 5%). F1 there is {curve['f1_at_operating']:.3f}; the curve shows what a "
+                "different operating point would buy. Both are drawn over every candidate rather "
+                "than a sample, so the precision-recall line is continuous."
             )
-
-        st.markdown("#### Per-signal AUC on this seed")
-        report = data_layer.run_report(seed)
-        if report:
-            signals = list(report.get("auc", {}))
-            st.pyplot(
-                charts.bars(
-                    [data_layer.SHORT.get(name, name) for name in signals],
-                    [float(report["auc"][name] or 0.5) for name in signals],
-                    title="AUC of each signal alone (whole pool, grey) and on the hard subset (coloured)",
-                    ylabel="AUC",
-                    horizontal=True,
-                    reference=0.5,
-                ),
-                clear_figure=True,
-            )
-            st.caption(
-                "Hard subset = the poisoned passage against the clean passages that actually "
-                "answered the question. A signal that only detects 'this passage answers the "
-                "question' scores well on the whole pool and collapses here."
-            )
-            hard = report.get("auc_hard", {})
-            st.write({data_layer.SHORT.get(name, name): round(value, 3) for name, value in hard.items() if value})
 
         st.markdown("#### Cost against detection")
-        details = data_layer.ablation_details()
         st.pyplot(
             charts.scatter(
                 [
                     (
-                        float(data_layer.cost_units(item["signals"].split("+") if item["signals"] != "none" else [])),
+                        float(
+                            data_layer.cost_units(
+                                item["signals"].split("+") if item["signals"] != "none" else []
+                            )
+                        ),
                         float(item.get("clean_rate") or 0.0),
                         item["config"],
                     )
@@ -242,16 +344,31 @@ with tabs[1]:
             ),
             clear_figure=True,
         )
+        st.dataframe(
+            [
+                {
+                    "config": item["config"],
+                    "signals": item["signals"],
+                    "calls per instance": data_layer.cost_units(
+                        item["signals"].split("+") if item["signals"] != "none" else []
+                    ),
+                    "clean_rate": round(float(item.get("clean_rate") or 0.0), 3),
+                }
+                for item in rows
+            ],
+            width="stretch",
+            hide_index=True,
+        )
         st.caption(
-            "Calls per instance counts S3 (15 per instance) and S5 (9 per batch view) as "
-            "the paid signals and S4 as one amortised call; the free signals cost nothing. "
-            "The trade-off is real: the cheapest configuration on the left of the plot is "
-            "also the one that keeps the evidence."
+            "Calls per instance counts S3 (15 per instance) and S5 (9 per batch view) as the "
+            "paid signals and S4 as one amortised call; S1, S2 and S6 are free. Read this "
+            "against the end-to-end result: the cheapest configuration that keeps the evidence "
+            "is not the one with the highest clean_rate."
         )
 
 
 # --------------------------------------------------------------------------- #
-# Tab 3
+# Tab 3 - signal x attack
 # --------------------------------------------------------------------------- #
 with tabs[2]:
     st.subheader("Which signal responds to which attack")
@@ -259,70 +376,120 @@ with tabs[2]:
     if not payload:
         st.info("No run report. Run `python run.py full` or `replicate`.")
     else:
-        signals = list(payload["per_family_auc"] and next(iter(payload["per_family_auc"].values())).keys())
         families = list(payload["per_family_auc"])
+        signals = list(next(iter(payload["per_family_auc"].values())).keys())
+        hard = _hard_family(seed)
+        short = [data_layer.SHORT.get(name, name) for name in signals]
+        family_short = [family.split("_")[0] for family in families]
+
+        st.caption(
+            "The whole-pool view is the flattering one: most negatives cannot answer the "
+            "question at all, so a signal that only detects 'this passage answers the question' "
+            "scores well. The hard-subset view keeps only poison and the clean passages that "
+            "answered, which is the comparison that decides whether a signal is useful."
+        )
         view = st.radio(
             "View",
-            ["AUC by family", "mean score by label"],
+            [
+                "whole pool (easy negatives)",
+                "hard subset (poison against real evidence)",
+                "difference: hard minus whole",
+            ],
             horizontal=True,
-            help="AUC is computed per family over that family's pools; the mean view shows "
-            "the raw signal values so a saturated or constant signal is visible.",
+            index=1,
         )
-        if view == "AUC by family":
+
+        if view.startswith("whole"):
             matrix = [
                 [float(payload["per_family_auc"][family].get(name) or 0.5) for family in families]
                 for name in signals
             ]
             st.pyplot(
                 charts.heatmap(
-                    matrix,
-                    [data_layer.SHORT.get(name, name) for name in signals],
-                    [family.split("_")[0] for family in families],
-                    title="AUC of each signal, per attack family",
-                    vmin=0.3,
-                    vmax=1.0,
-                    cmap="RdYlGn",
+                    matrix, short, family_short,
+                    title="AUC per signal, per attack family - whole pool",
+                    vmin=0.3, vmax=1.0, cmap="RdYlGn",
                 ),
                 clear_figure=True,
             )
-            st.caption(
-                "Read down a column to see which attack defeats which signal, and across a row "
-                "to see how far one signal travels. S4 is at chance on the stealth families and "
-                "perfect on the trace-carrying ones; that split is the argument for fusing."
-            )
+        elif view.startswith("hard"):
+            if not hard:
+                st.info("No hard-subset data for this seed.")
+            else:
+                matrix = [
+                    [float(hard[family].get(name) or 0.5) for family in families] for name in signals
+                ]
+                st.pyplot(
+                    charts.heatmap(
+                        matrix, short, family_short,
+                        title="AUC per signal, per attack family - hard subset",
+                        vmin=0.3, vmax=1.0, cmap="RdYlGn",
+                    ),
+                    clear_figure=True,
+                )
+                st.caption(
+                    "Hard subset = the poisoned passage against the clean passages that answered "
+                    "the question. S1, S3 and S3b fall to chance or below, while S4 stays at 1.00 "
+                    "on exactly the families that write traces."
+                )
         else:
-            labels = list(payload["per_label"])
-            matrix = [
-                [float(payload["per_label"][label].get(name) or 0.0) for label in labels]
+            if not hard:
+                st.info("No hard-subset data for this seed.")
+            else:
+                matrix = [
+                    [
+                        float(hard[family].get(name) or 0.5)
+                        - float(payload["per_family_auc"][family].get(name) or 0.5)
+                        for family in families
+                    ]
+                    for name in signals
+                ]
+                st.pyplot(
+                    charts.heatmap(
+                        matrix, short, family_short,
+                        title="Change from whole pool to hard subset (negative = collapse)",
+                        vmin=-0.7, vmax=0.7, cmap="RdYlGn", fmt="{:+.2f}",
+                        # A diverging scale is dark at both ends, so the midpoint rule
+                        # leaves white text on the palest cells. This is a new chart, so
+                        # it gets the readable rule; the two older heatmaps keep theirs.
+                        label_contrast="auto",
+                    ),
+                    clear_figure=True,
+                )
+                st.caption("Red means the signal looked better than it is once the easy negatives go.")
+
+        st.markdown("#### Mean signal value by label")
+        labels = list(payload["per_label"])
+        st.dataframe(
+            [
+                {
+                    "signal": data_layer.SHORT.get(name, name),
+                    **{
+                        label: round(float(payload["per_label"][label].get(name) or 0.0), 3)
+                        for label in labels
+                    },
+                }
                 for name in signals
-            ]
-            st.pyplot(
-                charts.heatmap(
-                    matrix,
-                    [data_layer.SHORT.get(name, name) for name in signals],
-                    labels,
-                    title="Mean signal value by label",
-                    vmin=0.0,
-                    vmax=1.0,
-                ),
-                clear_figure=True,
-            )
-            st.caption(
-                "The distractor row is the useful control: it should be the least suspicious "
-                "everywhere, otherwise the signal is measuring irrelevance rather than poison."
-            )
+            ],
+            width="stretch",
+            hide_index=True,
+        )
+        st.caption(
+            "The distractor column is the useful control: it should be the least suspicious "
+            "everywhere, otherwise the signal is measuring irrelevance rather than poison."
+        )
 
 
 # --------------------------------------------------------------------------- #
-# Tab 4
+# Tab 4 - per-query inspector
 # --------------------------------------------------------------------------- #
 with tabs[3]:
     st.subheader("Per-query inspector")
-    labels = data_layer.query_index(seed)
+    labels = data_layer.query_index(seed, split="test") or data_layer.query_index(seed)
     if not labels:
         st.info("No signal table for this seed.")
     else:
-        label = st.selectbox("Pool", labels, index=0)
+        label = st.selectbox("Pool (test split)", labels, index=0)
         detail = data_layer.query_detail(seed, label)
         if not detail:
             st.warning("That pool could not be loaded.")
@@ -330,58 +497,122 @@ with tabs[3]:
             st.write(f"**{detail['question']}**")
             st.caption(
                 f"genuine answer `{detail['correct_answer']}` / attacker target "
-                f"`{detail['target_answer']}` / split `{detail['split']}`"
+                f"`{detail['target_answer']}` / split `{detail['split']}` / family "
+                f"`{detail['attack_family']}` / injection {detail['injection']}"
             )
-            st.markdown("#### Weights and threshold")
+
+            fitted = data_layer.ablation_details().get((seed, "C8l"), {})
+            coefficients = fitted.get("coefficients") or {}
+            intercept = float(fitted.get("intercept") or 0.0)
+            fitted_tau = float(fitted.get("tau_quantile") or 0.5)
+
+            st.markdown("#### Two scoring rules, side by side")
+            if coefficients:
+                st.caption(
+                    f"**Manual** uses the sliders and does not correspond to any reported row. "
+                    f"**C8l fitted** is the logistic model of the C8l ablation row, with its own "
+                    f"intercept {intercept:+.3f} and its own threshold {fitted_tau:.4f}: that "
+                    "column is the one a reported number corresponds to."
+                )
+            else:
+                st.caption(
+                    "**Manual** uses the sliders and does not correspond to any reported row. "
+                    "The fitted C8l model is unavailable for this seed."
+                )
+
             controls = st.columns(7)
             weights = {}
             for column, name, default in zip(
-                controls, ("s1", "s2", "s3", "s4", "s5", "s6", "s7"),
+                controls,
+                ("s1", "s2", "s3", "s4", "s5", "s6", "s7"),
                 (0.5, 1.0, 1.5, 1.0, 1.5, 0.5, 0.0),
             ):
                 weights[name] = column.slider(name.upper(), 0.0, 2.0, default, 0.5)
-            threshold = st.slider("threshold", 0.0, 1.0, 0.5, 0.01)
-            st.caption(
-                "These weights only drive the score shown here. They are not the fitted "
-                "weights of any ablation row, and moving them changes nothing else."
-            )
+            threshold = st.slider("manual threshold", 0.0, 1.0, 0.5, 0.01)
+
             scored = data_layer.fuse_rows(detail["rows"], weights, threshold)
-            table = [
-                {
-                    "rank": row["rank"],
-                    "doc": row["doc_id"],
-                    "label": row["label"],
-                    "S1": round(row["s1"], 3),
-                    "S2": round(row["s2"], 3),
-                    "S3": round(row["s3"], 3),
-                    "S4": round(row["s4"], 3),
-                    "S5": round(row["s5"], 3),
-                    "S6": round(row["s6"], 3),
-                    "score": round(row["score"], 3),
-                    "flagged": "yes" if row["flagged"] else "",
-                    "extracted": row["answer"],
-                }
-                for row in scored
-            ]
-            st.dataframe(table, width="stretch", hide_index=True)
-            kept = [row for row in scored if not row["flagged"]][:5]
+            for item in scored:
+                if coefficients:
+                    linear = intercept + sum(
+                        float(weight) * float(item.get(ABLATION_COLUMNS[name][1], 0.0))
+                        for name, weight in coefficients.items()
+                    )
+                    item["fitted"] = _sigmoid(linear)
+                    item["fitted_flagged"] = item["fitted"] > fitted_tau
+                else:
+                    item["fitted"] = None
+                    item["fitted_flagged"] = False
+
+            st.dataframe(
+                [
+                    {
+                        "rank": item["rank"],
+                        "doc": item["doc_id"],
+                        "label": item["label"],
+                        "S1": round(item["s1"], 3),
+                        "S2": round(item["s2"], 3),
+                        "S3": round(item["s3"], 3),
+                        "S4": round(item["s4"], 3),
+                        "S5": round(item["s5"], 3),
+                        "S6": round(item["s6"], 3),
+                        "manual": round(item["score"], 3),
+                        "manual flag": "yes" if item["flagged"] else "",
+                        "C8l score": round(item["fitted"], 3) if item["fitted"] is not None else "-",
+                        "C8l flag": "yes" if item["fitted_flagged"] else "",
+                        "extracted": item["answer"],
+                    }
+                    for item in scored
+                ],
+                width="stretch",
+                hide_index=True,
+            )
+
+            kept = [item for item in scored if not item["flagged"]][:5]
+            kept_fitted = [item for item in scored if not item["fitted_flagged"]][:5]
             st.markdown("#### What the generator would see")
             st.caption(
-                f"{sum(1 for row in scored if row['flagged'])} of {len(scored)} candidates are "
-                f"flagged; the surviving top-5 contains "
-                f"{sum(1 for row in kept if row['is_attack'])} poisoned passage(s)."
+                f"manual rule: {sum(1 for item in scored if item['flagged'])} of {len(scored)} "
+                f"flagged, {sum(1 for item in kept if item['is_attack'])} poisoned passage(s) "
+                f"surviving | C8l rule: {sum(1 for item in scored if item['fitted_flagged'])} "
+                f"flagged, {sum(1 for item in kept_fitted if item['is_attack'])} poisoned "
+                "passage(s) surviving"
             )
-            for row in kept:
-                with st.expander(f"[{row['rank']}] {row['doc_id']} ({row['label']})"):
-                    st.write(row["text"])
-            if not kept:
-                st.warning("The filter would empty the pool, so the model would be asked with no context.")
+            for item in kept:
+                with st.expander(f"[{item['rank']}] {item['doc_id']} ({item['label']})"):
+                    st.write(item["text"])
+
+            st.markdown("#### What the defence actually answered for this pool")
+            answers = data_layer.defence_pool(seed, detail["corpus_id"], detail["query_id"])
+            if not answers:
+                st.info(
+                    "No end-to-end generation for this pool. The defence stage covers the test "
+                    "split only."
+                )
+            else:
+                st.dataframe(
+                    [
+                        {
+                            "config": item.get("config"),
+                            "answer": str(item.get("answer") or "")[:60],
+                            "outcome": item.get("label"),
+                            "poison in context": round(float(item.get("atr_after") or 0.0), 3),
+                        }
+                        for item in answers
+                    ],
+                    width="stretch",
+                    hide_index=True,
+                )
+                st.caption(
+                    "`outcome` classifies the generated answer: `target` means the attacker won, "
+                    "`correct` means the genuine answer survived, `unknown` is a refusal. This is "
+                    "the end-to-end table the specification asks for at the bottom of this page."
+                )
 
             st.markdown("#### Live re-run (spends money)")
             st.caption(
-                "The stored signals above are already paid for. Re-running this one pool asks "
-                "the model again: about 39 calls for one instance. Nothing leaves the machine "
-                "unless you tick the box and press the button."
+                "The signals above are already paid for. Re-running this one pool would ask the "
+                "model again, about 39 calls for one instance. Nothing leaves the machine unless "
+                "you tick the box and press the button."
             )
             accepted = st.checkbox("I accept the spend for this single instance", key="accept")
             budget = st.number_input("Hard call budget", min_value=1, max_value=60, value=60, step=1)
@@ -392,14 +623,14 @@ with tabs[3]:
                     f"{detail['query_id']}`."
                 )
                 st.info(
-                    "Deliberately not wired to the API inside the dashboard. The measurement "
-                    "pipeline owns the cache, the retry policy and the ledger; a button that "
-                    "bypasses them would produce numbers the rest of the project cannot audit."
+                    "Deliberately not wired to the API from inside the dashboard. The pipeline "
+                    "owns the cache, the retry policy and the ledger; a button that bypasses them "
+                    "would produce numbers the rest of the project cannot audit."
                 )
 
 
 # --------------------------------------------------------------------------- #
-# Tab 5
+# Tab 5 - security scan
 # --------------------------------------------------------------------------- #
 with tabs[4]:
     st.subheader("Security scan (periodic corpus audit)")
@@ -428,8 +659,8 @@ with tabs[4]:
         )
     if not history:
         st.info(
-            "No scan has been run yet. The scan stage (WP9) writes results/scans/index.json, "
-            "and this page then shows coverage, suspicious chunks and the cost-coverage curve."
+            "No scan has been run yet. The scan stage (WP9) writes results/scans/index.json, and "
+            "this page then shows coverage, suspicious chunks and the cost-coverage curve."
         )
     else:
         covered = sum(int(item.get("covered", 0)) for item in history)
@@ -437,4 +668,6 @@ with tabs[4]:
         st.dataframe(history, width="stretch", hide_index=True)
         rounds = -(-size // max(1, int(history[-1].get("covered", 1)))) if history else None
         if rounds:
-            st.caption(f"At the last round's coverage, about {rounds} rounds would cover the corpus.")
+            st.caption(
+                f"At the last round's coverage, about {rounds} rounds would cover the corpus."
+            )
