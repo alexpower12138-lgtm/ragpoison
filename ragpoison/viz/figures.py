@@ -23,8 +23,11 @@ def export_all(seed: int = 42, config_id: str = "C8l") -> list[str]:
     written: list[str] = []
 
     def save(figure, name: str) -> None:
+        import matplotlib.pyplot as plt
+
         path = target / name
         figure.savefig(path, bbox_inches="tight")
+        plt.close(figure)  # twenty-two figures in one run otherwise trip the warning
         written.append(rel(path))
 
     rows = [row for row in data_layer.ablation() if row.get("seed") == seed]
