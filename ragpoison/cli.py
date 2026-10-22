@@ -882,6 +882,43 @@ def cmd_refusion(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+
+# --------------------------------------------------------------------------- #
+# end-to-end defence (WP7b)
+# --------------------------------------------------------------------------- #
+
+
+def cmd_defence(args: argparse.Namespace) -> int:
+    from .evaluation.defence import DEFENCE_CONFIGS, run_defence
+    from .llm.client import BudgetExceeded
+
+    configs = tuple(args.configs) if args.configs else DEFENCE_CONFIGS
+    try:
+        payload = run_defence(
+            seeds=args.seeds,
+            configs=configs,
+            k=args.top_k,
+            concurrency=args.concurrency,
+            budget_cny=args.budget_cny,
+            mock=args.mock,
+            dry_run=args.dry_run,
+            write=not args.no_write,
+        )
+    except BudgetExceeded as exc:
+        print(f"BUDGET STOP: {exc}")
+        return EXIT_FAILED
+
+    if args.dry_run:
+        total = sum(int(entry.get("to_pay", 0)) for entry in payload["seeds"])
+        print()
+        print(f"dry run: {total} generations would be paid for")
+        return EXIT_OK
+    for entry in payload["seeds"]:
+        if not entry.get("dry_run"):
+            print(f"seed {entry['seed']}: report {entry.get('report', '')}")
+    return EXIT_OK
+
+
 # --------------------------------------------------------------------------- #
 # linters
 # --------------------------------------------------------------------------- #
@@ -1115,6 +1152,20 @@ def build_parser() -> argparse.ArgumentParser:
     refusion.add_argument("--reps", type=int, default=1000, help="bootstrap resamples")
     refusion.add_argument("--no-write", action="store_true", help="do not write csv/json/md")
     refusion.set_defaults(func=cmd_refusion)
+
+
+    defence = subparsers.add_parser(
+        "defence", help="generate from the filtered context and measure the attack end to end"
+    )
+    defence.add_argument("--seeds", type=int, nargs="+", default=[42], help="default: 42")
+    defence.add_argument("--configs", nargs="+", default=None, help="ablation ids to carry forward")
+    defence.add_argument("--top-k", type=int, default=None, help="override retrieval.top_k")
+    defence.add_argument("--concurrency", type=int, default=None, help="override runtime.concurrency")
+    defence.add_argument("--budget-cny", type=float, default=None, help="override the spend cap")
+    defence.add_argument("--mock", action="store_true", help="no network: plumbing test only")
+    defence.add_argument("--dry-run", action="store_true", help="count what would be paid for")
+    defence.add_argument("--no-write", action="store_true", help="do not write results")
+    defence.set_defaults(func=cmd_defence)
 
     for mode in ("pilot", "full", "replicate"):
         runner = subparsers.add_parser(
