@@ -1,10 +1,59 @@
-# STATE
+## Acceptance gaps closed (G1-G6)
 
-last_updated: 2026-10-21 20:40 (WP8 complete: five tabs, headless check passes)
-current_phase: D
-current_wp: WP8 DONE -> human screenshots -> WP9 -> WP10
+A read-only audit against section 2.5 of the specification found seven items that were
+not actually satisfied even though every experiment had run. All seven are now closed.
 
-## WP8: the dashboard
+| id | gap | what was done | artefact |
+|---|---|---|---|
+| G3 | detection metrics were never crossed by attack and injection size | every configuration now reports precision/recall/F1/FPR/FNR/clean_rate for all 12 cells | `results/summary_ablation_cells.csv` (360 rows), five tables per seed in `reports/ablation.md` |
+| G2 | no effect size, no Wilcoxon | paired risk difference with a CI (Agresti variance, same discordant pairs as McNemar), Cohen's h as a standardised secondary measure, exact Wilcoxon signed-rank at cell level | `reports/ablation.md` sections "Effect size against no defence" and "Cell-level contrasts" |
+| G1b | five of the eight report figures had no committed generator | `run.py figures` renders every figure for both seeds | 18 PNGs in `figures/` |
+| G1a | `metrics`, `figures`, `dashboard` were stubs | all three implemented; `scan` is the only stub left, and it belongs to WP9 | `python run.py --help` |
+| G6 | seed 42 had no invalid-instance record | `gen-data` now writes the file even when empty; seed 42 re-validated and recorded as 0 rows | `reports/retrieval_invalid_seed42.json` |
+| G4 | the specification says the signal table is CSV, it was JSONL | `run.py signals --csv` exports the joined table, 18000 rows x 29 columns per seed | `results/signals/seed{42,43}.csv` |
+| G5 | no per-query cost table | ledger aggregated by query through the tag field | `results/cost_per_query.csv` |
+
+### Why no odds ratio
+
+The effect size against no defence cannot be an odds ratio: C0 removes poison from
+exactly zero pools, because the comparison set is defined as the pools where the poison
+reached the window. McNemar's c cell is therefore always zero and the ratio is infinite.
+The risk difference is reported instead, in the same unit as clean_rate.
+
+### Two regressions found while closing these
+
+1. `signals/extract.py::separability` globbed `*.jsonl` and therefore read the paid
+   table too, which has no s1..s7 columns: `python run.py signals` had been broken
+   since the LLM stage first wrote its tables. It now skips `*.llm.jsonl`.
+2. `evaluation/cost.py` mapped corpus ids with `bundle.corpora`, which holds corpus id
+   strings rather than the per-query corpora, so every lookup failed. It now uses
+   `iter_query_corpora`.
+
+### One limitation worth stating in the report
+
+The per-query cost table is **seed-agnostic**: corpus ids are identical in both
+knowledge bases and the ledger records no seed, so a call cannot be attributed to seed
+42 rather than seed 43. One table with that stated is honest; two identical tables
+labelled by seed would not be.
+
+### Verification of the seed-42 data regeneration
+
+Regenerating seed 42 to produce its validation record was hash-checked: all 19 files
+were byte-identical before and after, and V18 independently reports identical
+regeneration. The data on disk is unchanged.
+
+## Where the acceptance checklist now stands
+
+Closed: the six-attack matrix on two seeds, the fifteen offline ablations with no
+extra calls, detection metrics crossed by attack and injection, the generation-layer
+metrics, bootstrap plus McNemar plus effect size plus a cell-level Wilcoxon, the
+per-query cost, the five-tab dashboard with a passing headless check, and the English
+lint.
+
+Still open, and both belong to work packages that have not started:
+`P1-P5` corpus scanning (WP9) and the two pseudocode blocks in the report (WP10).
+
+## ## WP8: the dashboard
 
 Three layers, so the parts that can be tested are separated from the part that cannot:
 
