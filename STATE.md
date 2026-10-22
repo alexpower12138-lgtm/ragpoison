@@ -1,8 +1,8 @@
 # STATE
 
-last_updated: 2026-10-22 23:30 (the seven acceptance gaps closed)
+last_updated: 2026-10-23 02:10 (WP9 complete; H4 does not hold, and the report says why)
 current_phase: D
-current_wp: WP0-WP8 audited and gap-free -> WP9 (optional) or WP10 (report)
+current_wp: WP0-WP9 DONE -> WP10 (the report)
 
 ## Acceptance gaps closed (G1-G6)
 
@@ -47,6 +47,57 @@ labelled by seed would not be.
 Regenerating seed 42 to produce its validation record was hash-checked: all 19 files
 were byte-identical before and after, and V18 independently reports identical
 regeneration. The data on disk is unchanged.
+
+## WP9: the corpus audit
+
+`python run.py scan --policies P1 P2 P3 P4 P5` audits the whole corpus with a free
+stage-1 screen and a batched, budgeted stage-2 judge. New modules:
+`scan/coarse.py` (the five zero-cost components), `scan/corpus_scan.py` (strategies,
+budget, per-policy state, index) and the `scan` command, which was the last stub.
+
+Seed 42, 2100 chunks of which 1800 are poisoned (86% prevalence, by construction):
+
+| policy | strategy | judged | coverage | tokens/chunk | corpus recall | recall within scanned | precision |
+|---|---|---|---|---|---|---|---|
+| P1 | full, batch 1 | 1942 | 92.5% | 360.9 | 70.2% | 75.9% | 93.3% |
+| P2 | full, batch 10 | 1880 | 89.5% | 179.5 | 36.1% | 40.9% | 96.3% |
+| P3 | coarse to fine | 912 | 43.4% | 189.6 | 27.0% | 53.5% | 99.6% |
+| P4 | incremental | 1880 | 89.5% | 198.8 | 36.1% | 40.9% | 96.3% |
+| P5 | coarse + 1 shard of 8 | 116 | 5.5% | 178.2 | 2.6% | 40.5% | 100% |
+
+**H4 does not hold.** Batching halves the cost per chunk and also halves recall within
+the scanned set; the two policies use the same prompt, the same truncation and the same
+passages, so the difference is attributable to batch size and nothing else. Screening
+cannot exceed its own stage-1 recall of 58% at tau = 0.4, and sharding divides coverage
+by eight by construction.
+
+**Why the screen cannot help on this benchmark**: 86% of the corpus is poisoned, so a
+screen good at finding poison selects most of the corpus. On a real knowledge base the
+prevalence would be far below 1% and the same screen would be far cheaper. That is a
+property of the benchmark, and the report has to say it rather than claim the audit is
+cheap in general.
+
+Stage-1 components, measured: `pplz` (0.578 against 0.096) and `rule` (0.258 against
+0.000) carry the screen; `lenz` (0.355 against 0.339) does not separate; `dup` is
+slightly *inverted* (0.557 against 0.612) because the clean templates repeat as much as
+the poisoned ones. Thirty percent of the weight is effectively noise.
+
+Artefacts: `results/scans/index.json` (one entry per policy, the largest run),
+`results/scans/scan_*.json` (every run), `results/scans/chunk_status_seed42_P*.json`
+(per-policy verdicts, so the five policies do not inherit each other's coverage),
+`reports/scan_report.md`, `figures/fig_scan_cost_coverage_seed42.png`. Tab 5 of the
+dashboard now shows the scan table and the coverage bar.
+
+### Three bugs found while building it
+
+1. The window loop stepped by ``WINDOW`` while the window could be smaller, so a scan
+   with thirteen batches submitted one and silently dropped twelve.
+2. The token budget was only checked once per window of twenty requests; a 2000-token
+   budget spent 32000. The window is now sized by the remaining budget, measured from
+   the previous window, and the first window is one request.
+3. A batch that failed to parse was recorded as "genuine". That treats an unreadable
+   verdict as evidence of innocence; failed batches now go on a dirty list and stay
+   out of the coverage count.
 
 ## Where the acceptance checklist now stands
 
