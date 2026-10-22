@@ -40,7 +40,6 @@ EXIT_PLANNED = 3
 #: Commands promised by the specification, mapped to the work package that
 #: implements them. Registered now so `--help` documents the full contract.
 PLANNED: dict[str, str] = {
-    "scan": "WP9: periodic corpus audit",
 }
 
 _CJK_RE = re.compile(r"[\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef\u3000-\u303f]")
@@ -1064,6 +1063,68 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     )
 
 
+
+# --------------------------------------------------------------------------- #
+# corpus audit (WP9)
+# --------------------------------------------------------------------------- #
+
+
+def cmd_scan(args: argparse.Namespace) -> int:
+    from .llm.client import BudgetExceeded
+    from .scan.corpus_scan import STRATEGIES, run_scan
+
+    policies = args.policies or ["P1"]
+    if args.strategy and args.strategy not in STRATEGIES:
+        print(f"unknown strategy: {args.strategy}")
+        return EXIT_FAILED
+
+    results = []
+    try:
+        for policy in policies:
+            print(f"scanning with {policy} ...", flush=True)
+            payload = run_scan(
+                seed=args.seed,
+                policy_name=policy,
+                rounds=args.rounds,
+                budget_tokens=args.budget_tokens,
+                tau_c=args.tau_c,
+                strategy=args.strategy,
+                shard=args.shard,
+                mock=args.mock,
+                write=not args.no_write,
+            )
+            results.append(payload)
+            print(
+                f"  {policy}: judged {payload['chunks_judged']} chunks, coverage "
+                f"{payload['coverage']:.1%}, {payload['tokens_used']} tokens, "
+                f"{payload['tokens_per_chunk']:.1f} tokens per chunk, "
+                f"suspicious {payload['suspicious_count']}, "
+                f"recall {payload['recall_against_ground_truth']:.1%}, "
+                f"precision {payload['precision_against_ground_truth']:.1%}"
+            )
+            if payload.get("unparsed_chunks"):
+                print(f"  unparsed batches marked dirty: {len(payload['unparsed_chunks'])} chunks")
+    except BudgetExceeded as exc:
+        print(f"BUDGET STOP: {exc}")
+        return EXIT_FAILED
+
+    if len(results) > 1:
+        print()
+        print(f"{'policy':<8}{'chunks':>8}{'coverage':>10}{'tokens':>9}{'tok/chunk':>11}{'recall':>8}")
+        base = next((row for row in results if row["policy"] == "P1"), results[0])
+        base_cost = base["tokens_per_chunk"] or 1.0
+        for row in results:
+            share = row["tokens_per_chunk"] / base_cost if base_cost else 0.0
+            print(
+                f"{row['policy']:<8}{row['chunks_judged']:>8}{row['coverage']:>10.1%}"
+                f"{row['tokens_used']:>9}{row['tokens_per_chunk']:>11.1f}"
+                f"{row['recall_against_ground_truth']:>8.1%}   ({share:.0%} of P1's cost per chunk)"
+            )
+        print()
+        print("H4 target: cost <= 20% of the per-item full scan with recall >= 80%.")
+    return EXIT_OK
+
+
 # --------------------------------------------------------------------------- #
 # linters
 # --------------------------------------------------------------------------- #
@@ -1292,6 +1353,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 
+
+
+    scan = subparsers.add_parser(
+        "scan", help="audit the whole corpus with a budgeted two-stage policy"
+    )
+    scan.add_argument("--seed", type=int, default=42)
+    scan.add_argument("--policies", nargs="+", default=["P1"], help="scan_P*.yaml names")
+    scan.add_argument("--rounds", type=int, default=1, help="budgeted passes to run")
+    scan.add_argument("--strategy", default=None, help="override the policy's strategy")
+    scan.add_argument("--budget-tokens", type=int, default=None, help="override the token budget")
+    scan.add_argument("--tau-c", type=float, default=None, help="override the coarse threshold")
+    scan.add_argument("--shard", type=int, default=0, help="which hash shard to scan first")
+    scan.add_argument("--mock", action="store_true", help="no network: plumbing test only")
+    scan.add_argument("--no-write", action="store_true", help="do not write results")
+    scan.set_defaults(func=cmd_scan)
 
     metrics = subparsers.add_parser(
         "metrics", help="print the headline metrics and the per-query cost table"

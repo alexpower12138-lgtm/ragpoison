@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import re
 
+# NOTE: the responder is not part of the cache key, so after changing a response shape
+# the mock cache has to be deleted (cache/llm_mock) or the old answers will be served.
 _NUMBER_RE = re.compile(r"\b\d{2,4}\b")
 _PASSAGE_ID_RE = re.compile(r"^\[(\d+)\]", re.MULTILINE)
 
@@ -34,6 +36,15 @@ def signal_responder(prompt: str) -> str:
         return '{"answer": "%s", "confidence": 0.6}' % answer
     if '"score"' in prompt:
         return '{"score": 0.5, "category": "meta_discourse", "reason": "mock trace"}'
+    if '"harmful"' in prompt:
+        ids = [int(match.group(1)) for match in _PASSAGE_ID_RE.finditer(prompt)]
+        if not ids:
+            ids = [1]
+        entries = ", ".join(
+            '{"id": %d, "harmful": 0, "category": "genuine", "reason": "mock verdict"}' % identifier
+            for identifier in ids
+        )
+        return f"[{entries}]"
     if '"flag"' in prompt:
         ids = [int(match.group(1)) for match in _PASSAGE_ID_RE.finditer(prompt)]
         if not ids:

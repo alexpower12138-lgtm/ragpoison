@@ -161,4 +161,30 @@ def export_all(seed: int = 42, config_id: str = "C8l") -> list[str]:
             f"fig_precision_recall_seed{seed}.png",
         )
 
+    index_path = repo_path("results", "scans", "index.json")
+    if index_path.exists():
+        import json
+
+        entries = json.loads(index_path.read_text(encoding="utf-8"))
+        points = [
+            (
+                float(entry.get("tokens_per_chunk") or 0.0),
+                float(entry.get("recall") or 0.0),
+                str(entry.get("policy") or entry.get("scan_id")),
+            )
+            for entry in entries
+            if not entry.get("mock")
+        ]
+        if points:
+            save(
+                charts.scatter(
+                    points,
+                    title="Corpus audit: cost against recall, one point per policy",
+                    xlabel="tokens per chunk judged",
+                    ylabel="recall of poisoned chunks",
+                    leader=True,
+                ),
+                f"fig_scan_cost_coverage_seed{seed}.png",
+            )
+
     return written
