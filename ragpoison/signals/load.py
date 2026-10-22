@@ -88,3 +88,30 @@ def hard_subset(rows: list[dict]) -> list[dict]:
         if int(row["is_attack_for_query"]) == 1
         or (row["label_class"] == "clean" and not int(row.get("s3_unknown", 1)))
     ]
+
+
+def write_csv(seed: int, directory=None) -> str:
+    """Write the joined signal table as one CSV per seed.
+
+    The specification says the signal table is stored as CSV; it is stored as JSONL
+    per corpus because the local and the paid tables are produced by different stages
+    and joined later. This export closes that gap without changing the storage: one
+    CSV per seed, every column, ready for a spreadsheet.
+    """
+    import csv
+
+    from ..paths import path as repo_path, rel
+
+    rows = load_joined(seed, directory)
+    if not rows:
+        raise RuntimeError(f"no signal table for seed {seed}")
+    path = repo_path("results", "signals", f"seed{seed}.csv")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    first = rows[0]
+    fields = list(first)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: row.get(key) for key in fields})
+    return rel(path)

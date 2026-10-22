@@ -40,9 +40,6 @@ EXIT_PLANNED = 3
 #: Commands promised by the specification, mapped to the work package that
 #: implements them. Registered now so `--help` documents the full contract.
 PLANNED: dict[str, str] = {
-    "metrics": "WP6: statistics and figures",
-    "figures": "WP6: report figures",
-    "dashboard": "WP8: Streamlit application",
     "scan": "WP9: periodic corpus audit",
 }
 
@@ -594,8 +591,17 @@ def cmd_spend(args: argparse.Namespace) -> int:
 
 def cmd_signals(args: argparse.Namespace) -> int:
     if args.stage in {"llm", "all"}:
-        return _cmd_llm_signals(args)
-    return _cmd_local_signals(args)
+        code = _cmd_llm_signals(args)
+    else:
+        code = _cmd_local_signals(args)
+    if args.csv and code == EXIT_OK:
+        from .signals.load import write_csv
+
+        try:
+            print(f"wrote {write_csv(args.seed)}")
+        except RuntimeError as exc:
+            print(f"csv export skipped: {exc}")
+    return code
 
 
 def _cmd_llm_signals(args: argparse.Namespace) -> int:
@@ -793,13 +799,15 @@ def cmd_gen_data(args: argparse.Namespace) -> int:
         if not ok:
             exit_code = EXIT_FAILED
 
-        if notes:
-            invalid_path = repo_path("reports", f"retrieval_invalid_seed{seed}.json")
-            invalid_path.parent.mkdir(parents=True, exist_ok=True)
-            invalid_path.write_text(
-                json.dumps(notes, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n"
-            )
-            print(f"invalid instances recorded: {rel(invalid_path)} ({len(notes)} rows)")
+        # Written even when empty: "zero invalid instances" is a result and has to
+        # leave a record, otherwise seed 42 simply had no file and its rate could not
+        # be stated.
+        invalid_path = repo_path("reports", f"retrieval_invalid_seed{seed}.json")
+        invalid_path.parent.mkdir(parents=True, exist_ok=True)
+        invalid_path.write_text(
+            json.dumps(notes, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n"
+        )
+        print(f"invalid instances recorded: {rel(invalid_path)} ({len(notes)} rows)")
 
         log_lines.append(f"=== seed {seed} ===")
         log_lines.append(f"generator_version: 1.0.0")
@@ -969,6 +977,91 @@ def cmd_ui_check(args: argparse.Namespace) -> int:
         return EXIT_OK
     print("UI-CHECK: FAIL")
     return EXIT_FAILED
+
+
+
+# --------------------------------------------------------------------------- #
+# reporting commands (G1a): metrics / figures / dashboard
+# --------------------------------------------------------------------------- #
+
+
+def cmd_metrics(args: argparse.Namespace) -> int:
+    from .evaluation import cost as cost_module
+
+    seeds = args.seeds or [42]
+    rows = [row for row in _ablation_rows() if int(row["seed"]) in seeds]
+    if not rows:
+        print("no ablation summary; run `python run.py refusion` first")
+        return EXIT_FAILED
+    print(f"{'seed':>5}{'config':>7}{'clean_rate':>12}{'RD vs C0':>11}{'h':>7}"
+          f"{'F1':>7}{'FPR':>7}{'AUC':>7}{'AUC hard':>10}")
+    print("-" * 73)
+    for row in rows:
+        try:
+            seed = int(float(row["seed"]))
+        except (TypeError, ValueError):
+            continue
+        print(
+            f"{seed:>5}{row['config']:>7}{float(row['clean_rate']):>12.3f}"
+            f"{float(row.get('rd') or 0.0) * 100:>10.1f}pp{float(row.get('cohens_h') or 0.0):>7.3f}"
+            f"{float(row['f1']):>7.3f}{float(row['fpr']):>7.3f}"
+            f"{float(row['auc'] or 0.0):>7.3f}{float(row['auc_hard'] or 0.0):>10.3f}"
+        )
+    print()
+    payload = cost_module.write_csv(seeds[0])
+    if payload["rows"]:
+        calls = sum(row["calls"] for row in payload["rows"]) / len(payload["rows"])
+        paid = sum(row["paid_calls"] for row in payload["rows"])
+        print(
+            f"per-query cost: {len(payload['rows'])} queries, {calls:.1f} calls per query, "
+            f"{paid} paid calls, {payload['unattributed']} ledger rows unattributed"
+        )
+        print(f"  -> {payload['path']}")
+        print(
+            "  seed-agnostic: corpus ids are identical across the two knowledge bases and the "
+            "ledger records no seed, so the two cannot be separated."
+        )
+    return EXIT_OK
+
+
+def _ablation_rows() -> list[dict]:
+    import csv
+
+    path = repo_path("results", "summary_ablation.csv")
+    if not path.exists():
+        return []
+    with path.open(encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
+
+
+def cmd_figures(args: argparse.Namespace) -> int:
+    from .viz.figures import export_all
+
+    seeds = args.seeds or [42, 43]
+    written: list[str] = []
+    for seed in seeds:
+        written.extend(export_all(seed, config_id=args.config))
+    for name in written:
+        print(f"wrote {name}")
+    print()
+    print(f"FIGURES: {len(written)} files")
+    return EXIT_OK
+
+
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    import os
+    import sys
+
+    app = repo_path("ragpoison", "viz", "streamlit_app.py")
+    if not app.exists():
+        print(f"dashboard not found at {app}")
+        return EXIT_FAILED
+    print(f"starting streamlit on {app}")
+    print("press Ctrl+C to stop")
+    os.execv(
+        sys.executable,
+        [sys.executable, "-m", "streamlit", "run", str(app)] + ([] if not args.port else ["--server.port", str(args.port)]),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1162,6 +1255,9 @@ def build_parser() -> argparse.ArgumentParser:
     signals.add_argument("--top-n", type=int, default=None, help="override the pool size")
     signals.add_argument("--no-write", action="store_true", help="do not write JSONL")
     signals.add_argument(
+        "--csv", action="store_true", help="also export the joined table as one CSV per seed"
+    )
+    signals.add_argument(
         "--stage",
         default="local",
         choices=["local", "llm", "all"],
@@ -1195,6 +1291,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
 
+
+
+    metrics = subparsers.add_parser(
+        "metrics", help="print the headline metrics and the per-query cost table"
+    )
+    metrics.add_argument("--seeds", type=int, nargs="+", default=None, help="default: 42")
+    metrics.set_defaults(func=cmd_metrics)
+
+    figures = subparsers.add_parser("figures", help="write every report figure as a PNG")
+    figures.add_argument("--seeds", type=int, nargs="+", default=None, help="default: 42 43")
+    figures.add_argument("--config", default="C8l", help="configuration to illustrate")
+    figures.set_defaults(func=cmd_figures)
+
+    dashboard = subparsers.add_parser("dashboard", help="launch the Streamlit dashboard")
+    dashboard.add_argument("--port", type=int, default=None, help="override the port")
+    dashboard.set_defaults(func=cmd_dashboard)
 
     refusion = subparsers.add_parser(
         "refusion", help="offline ablation over the frozen signal table (no API calls)"

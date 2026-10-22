@@ -38,61 +38,10 @@ EXPECTED_TABS = 5
 
 
 def _export_figures() -> list[str]:
-    from ..viz import charts, data_layer
+    """Delegate to the figures command so there is one code path, not two."""
+    from ..viz import figures
 
-    figures = repo_path("figures")
-    figures.mkdir(parents=True, exist_ok=True)
-    written: list[str] = []
-
-    rows = [row for row in data_layer.ablation() if row.get("seed") == 42]
-    if rows:
-        names = [row["config"] for row in rows]
-        figure = charts.bars(
-            names,
-            [float(row.get("clean_rate") or 0.0) for row in rows],
-            title="clean_rate by configuration (seed 42)",
-            highlight={"C4"},
-            horizontal=True,
-            ylim=(0, 1),
-        )
-        path = figures / "ui_ablation_clean_rate.png"
-        figure.savefig(path, bbox_inches="tight")
-        written.append(rel(path))
-
-        chosen = next((row for row in rows if row["config"] == "C8l"), rows[0])
-        figure = charts.confusion(
-            int(chosen.get("tp") or 0),
-            int(chosen.get("fp") or 0),
-            int(chosen.get("fn") or 0),
-            int(chosen.get("tn") or 0),
-            title=f"{chosen['config']} at its operating threshold",
-        )
-        path = figures / "ui_confusion.png"
-        figure.savefig(path, bbox_inches="tight")
-        written.append(rel(path))
-
-    payload = data_layer.signal_attack(42)
-    if payload.get("per_family_auc"):
-        signals = list(next(iter(payload["per_family_auc"].values())).keys())
-        families = list(payload["per_family_auc"])
-        matrix = [
-            [float(payload["per_family_auc"][family].get(name) or 0.5) for family in families]
-            for name in signals
-        ]
-        figure = charts.heatmap(
-            matrix,
-            [data_layer.SHORT.get(name, name) for name in signals],
-            [family.split("_")[0] for family in families],
-            title="AUC of each signal, per attack family",
-            vmin=0.3,
-            vmax=1.0,
-            cmap="RdYlGn",
-        )
-        path = figures / "ui_signal_attack_heatmap.png"
-        figure.savefig(path, bbox_inches="tight")
-        written.append(rel(path))
-
-    return written
+    return figures.export_all(42)
 
 
 # --------------------------------------------------------------------------- #

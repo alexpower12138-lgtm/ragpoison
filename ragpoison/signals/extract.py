@@ -201,6 +201,10 @@ def separability(seed: int = 42, path: Path | None = None) -> list[dict]:
     target = path or repo_path("results", "signals", f"seed{seed}")
     buckets: dict[tuple[str, int, str], dict[str, list[float]]] = {}
     for candidate in sorted(target.glob("*.jsonl")):
+        # Skip the paid table: it carries S3/S4/S5 and has no s1..s7 columns, so
+        # including it crashed the local summary the moment the LLM stage had run.
+        if ".llm." in candidate.name:
+            continue
         with candidate.open(encoding="utf-8") as handle:
             for line in handle:
                 row = json.loads(line)
