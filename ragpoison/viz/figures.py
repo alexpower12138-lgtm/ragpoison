@@ -76,6 +76,23 @@ def export_all(seed: int = 42, config_id: str = "C8l") -> list[str]:
             f"fig_cost_scatter_seed{seed}.png",
         )
 
+    defence = data_layer.defence(seed)
+    if defence:
+        order = [name for name in ("C0", "C1", "C4", "C7", "C8", "C8l") if name in defence]
+        save(
+            charts.grouped_bars(
+                order,
+                {
+                    "attack success": [float(defence[name]["asr"]) for name in order],
+                    "correct answer": [float(defence[name]["correct"]) for name in order],
+                },
+                title=f"End-to-end defence, seed {seed}: attack success against correct answers",
+                xlim=(0, 1),
+                colours={"attack success": "#b23c17", "correct answer": "#2f6f9f"},
+            ),
+            f"fig_defence_seed{seed}.png",
+        )
+
     report = data_layer.run_report(seed)
     if report:
         signals = list(report.get("auc", {}))
