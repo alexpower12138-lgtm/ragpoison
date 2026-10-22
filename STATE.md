@@ -1,76 +1,63 @@
 # STATE
 
-last_updated: 2026-10-21 16:20 (end-to-end defence measured; the offline ranking reverses)
+last_updated: 2026-10-21 18:00 (end-to-end defence replicated on both seeds)
 current_phase: C
-current_wp: WP7b DONE on seed 42 -> seed 43 replication (about 1 CNY)
+current_wp: WP7b DONE (both seeds) -> WP8 dashboard
 
-## WP7b result: the offline ranking reverses end to end
+## WP7b result: replicated on both seeds
 
-Seed 42, 840 test instances per configuration, all with the same generation prompt.
-`python run.py defence`, 753 paid generations, about 0.6 CNY.
+840 test instances per configuration per seed, same generation prompt throughout.
+Seed 42 cost 753 paid generations, seed 43 another 911; about 1.2 CNY in total.
 
-| config | ASR | correct | UNKNOWN | other | dASR vs C0 | dcorrect vs C0 |
-|---|---|---|---|---|---|---|
-| C0 no defence | 0.693 | 0.307 | 0.000 | 0.000 | - | - |
-| C1 S1 only | 0.462 | 0.326 | 0.192 | 0.020 | +0.231 | +0.019 |
-| **C4 S4 only** | **0.279** | **0.707** | 0.014 | 0.000 | **+0.414** | **+0.400** |
-| C7 S4+S5 | 0.279 | 0.586 | 0.127 | 0.008 | +0.414 | +0.279 |
-| C8 all, mean | 0.154 | 0.268 | 0.532 | 0.046 | +0.539 | **-0.039** |
-| C8l all, logistic | 0.092 | 0.381 | 0.490 | 0.037 | +0.601 | +0.074 |
+| config | ASR 42 | ASR 43 | correct 42 | correct 43 | UNKNOWN 42 | UNKNOWN 43 | dcorrect 42 | dcorrect 43 |
+|---|---|---|---|---|---|---|---|---|
+| C0 no defence | 0.693 | 0.683 | 0.307 | 0.317 | 0.000 | 0.000 | - | - |
+| C1 S1 only | 0.462 | 0.618 | 0.326 | 0.344 | 0.192 | 0.038 | +0.019 | +0.027 |
+| **C4 S4 only** | **0.279** | **0.285** | **0.707** | **0.688** | 0.014 | 0.027 | **+0.400** | **+0.371** |
+| C7 S4+S5 | 0.279 | 0.269 | 0.586 | 0.580 | 0.127 | 0.146 | +0.279 | +0.263 |
+| C8 all, mean | 0.154 | 0.155 | 0.268 | 0.335 | 0.532 | 0.485 | -0.039 | +0.018 |
+| C8l all, logistic | 0.092 | 0.069 | 0.381 | 0.331 | 0.490 | 0.567 | +0.074 | +0.014 |
 
-C4 - the instruction-trace signal on its own - is the best defence: it cuts the
-attack from 69% to 28% while *more than doubling* the share of answers that are
-correct, and it abstains on 1.4% of instances. The fusions reach a lower ASR only by
-abstaining on half the instances, and C8 answers correctly *less often than no
-defence at all*.
+Three claims survive both seeds:
 
-That inverts the offline ranking completely: clean_rate put C8l first (0.892) and C4
-fourth (0.545). The offline metric rewards removing everything, and the aggressive
-configurations buy their clean_rate by deleting the evidence. H2 therefore holds for
-detection and fails for utility, which the plan allows for and the report must say
-plainly.
+1. **C4 is the only configuration that improves answerability**, by 0.40 and 0.37, while
+   cutting the attack from about 0.69 to 0.28.
+2. **The fusions reach a lower ASR only by abstaining.** C8 and C8l answer correctly at
+   roughly the undefended rate (0.27-0.38 against 0.31-0.32) while refusing on half the
+   instances. On seed 42 C8 was 3.9 points *worse* than no defence; on seed 43 it was
+   1.8 points better. That does not replicate, so the honest claim is "no consistent
+   improvement in correctness", not "worse than nothing".
+3. **Rank-based filtering is harmful, and the direction replicates.** On seed 42 C1
+   raised ATK6 from 0.36 to 0.64; on seed 43 it raised four families - ATK2 0.76 to
+   0.94, ATK3 0.74 to 0.92, ATK5 0.68 to 0.92, ATK6 0.34 to 0.81. Removing the
+   top-ranked candidates removes the genuine evidence and leaves the poison.
 
-By attack family, seed 42:
+By attack family, seed 43:
 
 | config | ATK1 | ATK2 | ATK3 | ATK4 | ATK5 | ATK6 |
 |---|---|---|---|---|---|---|
-| C0 | 0.87 | 0.83 | 0.76 | 0.68 | 0.66 | 0.36 |
-| C1 | 0.01 | 0.69 | 0.74 | 0.00 | 0.70 | 0.64 |
-| C4 | 0.65 | 0.00 | 0.00 | 0.00 | 0.67 | 0.35 |
-| C8 | 0.12 | 0.00 | 0.00 | 0.00 | 0.61 | 0.19 |
-| C8l | 0.06 | 0.00 | 0.00 | 0.00 | 0.41 | 0.09 |
+| C0 | 0.94 | 0.76 | 0.74 | 0.65 | 0.68 | 0.34 |
+| C1 | 0.11 | 0.94 | 0.92 | 0.00 | 0.92 | 0.81 |
+| C4 | 0.74 | 0.00 | 0.00 | 0.00 | 0.69 | 0.27 |
+| C8 | 0.16 | 0.00 | 0.00 | 0.00 | 0.61 | 0.16 |
+| C8l | 0.03 | 0.00 | 0.00 | 0.00 | 0.35 | 0.04 |
 
-* C4 demolishes the three attacks that carry traces (ATK2, ATK3, ATK4 -> 0.00) and is
-  blind to ATK5 and ATK6, exactly as the per-family AUC predicted.
-* **ATK5 resists every configuration**; even the logistic fusion only reaches 0.41.
-  The stealth assertion is the hardest attack in the benchmark.
-* **C1 is worse than no defence on ATK6**: 0.36 under C0, 0.64 under C1. Filtering by
-  retrieval rank removes the genuine passage and leaves the hedged poison standing.
-  A defence that helps the attacker is the clearest possible argument for measuring
-  end to end instead of trusting a detection metric.
+C4 demolishes ATK2, ATK3 and ATK4 on both seeds (0.00) and is blind to ATK5 and ATK6,
+exactly as the per-family AUC predicted. **ATK5 resists every configuration**: the
+best it ever gets is 0.35 under the logistic fusion.
 
-Paired tests against C0: C4 wins 352 pools and loses 4; C8l wins 518 and loses 13.
+### One correction to an earlier reading
 
-### A classifier gap found by looking at the raw answers
+The `abstained` column in the defence cells is the *policy* emptying the pool, and it
+is 0 for every configuration and both seeds. The UNKNOWN column is the *model*
+declining to answer. The first reading of seed 42 conflated the two. The distinction
+matters: C1 does not wipe pools, it removes the passages that would have supported an
+answer, and the model then says so.
 
-The first run reported C8's "other" at 40.7% and its abstention at 17.1%. The raw
-answers showed almost all of that to be refusals phrased as remarks about the
-context: "The context does not mention Aldren Systems." `is_unknown` did not know
-that family of phrasings, so abstentions were being counted as wrong answers. With
-the pattern added, C8's abstention is 53.2% and C4's is 1.4%.
+## Next action (human)
 
-Checked before accepting the change: re-classifying every stored cell shows **zero
-label changes in the baseline table** (both seeds) and identical Gate G and control
-numbers, so nothing already reported moves. Nine cells elsewhere changed from
-`other` to `unknown`, and the generation and control stages were re-run (all cached)
-so the stored artefacts match the classifier.
-
-## Next action (exact command for human)
-
-```
-python run.py defence --seeds 43
-```
-About 900 paid generations, about 0.6 CNY: the replication of the reversal.
+WP8, the Streamlit dashboard. No further API spend is needed for it: every number it
+displays already exists in `results/` and `reports/`.
 
 ## WP6: the offline ablation
 
