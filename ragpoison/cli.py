@@ -40,7 +40,6 @@ EXIT_PLANNED = 3
 #: Commands promised by the specification, mapped to the work package that
 #: implements them. Registered now so `--help` documents the full contract.
 PLANNED: dict[str, str] = {
-    "refusion": "WP6: offline ablation",
     "metrics": "WP6: statistics and figures",
     "figures": "WP6: report figures",
     "ui-check": "WP8: headless Streamlit check",
@@ -221,6 +220,15 @@ def _check(name: str, fn: Callable[[], str]) -> tuple[bool, str, str]:
         return False, name, detail
 
 
+def _load_joined_or_empty(seed: int):
+    from .signals.load import load_joined
+
+    try:
+        return load_joined(seed)
+    except FileNotFoundError:
+        return []
+
+
 def cmd_selftest(args: argparse.Namespace) -> int:
     checks: list[tuple[str, Callable[[], str]]] = []
 
@@ -369,6 +377,26 @@ def cmd_selftest(args: argparse.Namespace) -> int:
             raise RuntimeError(f"array JSON not parsed: {flags}")
         return "fenced, prose and malformed outputs handled"
 
+
+    def check_row_identity() -> str:
+        from .signals.load import row_key
+
+        rows = _load_joined_or_empty(42)
+        if not rows:
+            return "skipped (no signal table)"
+        keys = [row_key(row) for row in rows]
+        if len(set(keys)) != len(keys):
+            raise RuntimeError("row identity is not unique: scores would silently collide")
+        doc_ids = {row["doc_id"] for row in rows}
+        if len(doc_ids) == len(rows):
+            raise RuntimeError("expected repeated doc_ids; the test is not exercising the hazard")
+        # Two candidates sharing a doc_id must be scored independently.
+        duplicates: dict[str, int] = {}
+        for row in rows:
+            duplicates[row["doc_id"]] = duplicates.get(row["doc_id"], 0) + 1
+        worst = max(duplicates.values())
+        return f"{len(rows)} rows, {len(doc_ids)} distinct doc_id (max {worst} repeats), identity unique"
+
     def check_ablation_columns() -> str:
         from .signals.base import ABLATION_COLUMNS, PRIOR_COLUMN, columns_for
 
@@ -413,6 +441,7 @@ def cmd_selftest(args: argparse.Namespace) -> int:
         ("signals: JSON parsing of model output", check_json_parsing),
         ("signals: calibration statistics", check_calibration),
         ("signals: ablation names resolve to columns", check_ablation_columns),
+        ("signals: candidate identity is unique", check_row_identity),
         ("config: experiment configs load", check_all_configs),
         ("config: ablation matrix is complete", check_ablation_matrix),
         ("paths: generated directories exist", check_dirs),
@@ -828,6 +857,31 @@ def cmd_run(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+
+# --------------------------------------------------------------------------- #
+# offline ablation (WP6)
+# --------------------------------------------------------------------------- #
+
+
+def cmd_refusion(args: argparse.Namespace) -> int:
+    from .evaluation.ablation import run_ablation
+
+    seeds = args.seeds or [42, 43]
+    print(f"offline ablation: seeds {seeds}, top-k {args.top_k or 'config'}, {args.reps} bootstrap reps")
+    payload = run_ablation(seeds=seeds, k=args.top_k, reps=args.reps, write=not args.no_write)
+    print()
+    print(f"wrote {payload['csv']}")
+    print(f"wrote {payload['details']}")
+    print(f"wrote {payload['report']}")
+    print()
+    best = max(payload["records"], key=lambda row: (row["clean_rate"], row["f1"]))
+    print(
+        f"best clean_rate: {best['config']} ({best['clean_rate']:.3f}) on seed {best['seed']}, "
+        f"F1 {best['f1']:.3f}"
+    )
+    return EXIT_OK
+
+
 # --------------------------------------------------------------------------- #
 # linters
 # --------------------------------------------------------------------------- #
@@ -1051,6 +1105,16 @@ def build_parser() -> argparse.ArgumentParser:
         func=cmd_spend
     )
 
+
+
+    refusion = subparsers.add_parser(
+        "refusion", help="offline ablation over the frozen signal table (no API calls)"
+    )
+    refusion.add_argument("--seeds", type=int, nargs="+", default=None, help="default: 42 43")
+    refusion.add_argument("--top-k", type=int, default=None, help="override retrieval.top_k")
+    refusion.add_argument("--reps", type=int, default=1000, help="bootstrap resamples")
+    refusion.add_argument("--no-write", action="store_true", help="do not write csv/json/md")
+    refusion.set_defaults(func=cmd_refusion)
 
     for mode in ("pilot", "full", "replicate"):
         runner = subparsers.add_parser(

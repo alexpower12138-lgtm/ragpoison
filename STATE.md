@@ -1,8 +1,92 @@
 # STATE
 
-last_updated: 2026-10-21 08:40 (R2 complete and valid; redundancy inverts the consensus signals)
-current_phase: B
-current_wp: R2 DONE -> R3 (replication) -> WP6
+last_updated: 2026-10-21 12:30 (WP6 complete: offline ablation, two bugs fixed on the way)
+current_phase: C
+current_wp: WP6 DONE -> WP8 (dashboard) or the end-to-end defence run
+
+## WP6: the offline ablation
+
+`python run.py refusion` scores the fifteen configurations of `configs/ablation.yaml`
+against the frozen tables. Zero API calls, 19 seconds for both seeds, because every
+configuration sees exactly the same stored signal values and only the fusion rule
+changes. Outputs: `results/summary_ablation.csv`,
+`results/summary_ablation_details.json` (thresholds, weights, logistic coefficients,
+per-injection and per-family breakdowns, paired tests) and `reports/ablation.md`.
+
+New modules: `signals/load.py` (the join, plus the row identity), `fusion/fuse.py`
+(three rules), `fusion/calibrate.py` (threshold and weight fitting on the calibration
+split only), `fusion/policy.py` (filtering with refill), `evaluation/aggregate.py`
+(metric definitions), `evaluation/stats.py` (pool-clustered bootstrap, exact McNemar),
+`evaluation/ablation.py` (orchestration and report).
+
+### Two bugs found while building it
+
+1. **A document-id collision that corrupted every score.** Scores were stored in a
+   dictionary keyed by `doc_id`. Document ids are not unique: the 12600 test
+   candidates share only 1484 distinct ids, one of them appearing 198 times, because
+   the same base-pool passage is retrieved for many queries. Each lookup therefore
+   returned the score of some *other* query's candidate. It was caught by an
+   inconsistency that the numbers themselves could not explain - S5 alone reported a
+   0.000 false-positive rate at a 5% budget - and by then the first version of the
+   table had already been written. Everything now goes through `signals.load.row_key`,
+   and selftest item 6 fails the build if the identity is ever not unique.
+   This affected the ablation only: the `full` and `replicate` reports read the
+   columns directly and were re-derived independently.
+
+2. **The "95th percentile" threshold was not a 5% false-positive rate.** S5 can only
+   take 0, 0.25, 0.5 or 0.75, and 89% of benign candidates sit at exactly 0, so its
+   95th percentile is 0.5 and the threshold actually flagged 1.7% of benign
+   candidates. Each configuration was therefore operating at a different point of its
+   own ROC curve, and the comparison was partly a comparison of operating points.
+   The threshold is now the lowest cut that keeps the benign false-positive rate at
+   or below the 5% budget; discrete signals land under the budget and the achieved
+   rate is recorded.
+
+## The result
+
+Pool-level `clean_rate` - the fraction of pools whose poisoned passages are all gone
+from the context - on the test split, 840 pools:
+
+| config | seed 42 | seed 43 | what it is |
+|---|---|---|---|
+| C0 | 0.000 | 0.000 | no defence |
+| C1 | 0.515 | 0.351 | S1 alone |
+| C1f | 0.000 | 0.000 | S1 with the sign flipped (control) |
+| C2 | 0.051 | 0.035 | S2 alone |
+| C3 | 0.407 | 0.386 | S3 alone |
+| C3b | 0.000 | 0.000 | S3b alone (negative control) |
+| C4 | 0.545 | 0.539 | S4 alone |
+| C5 | 0.464 | 0.468 | S5 alone |
+| C6 | 0.530 | 0.448 | S1+S2+S3 |
+| C7 | 0.577 | 0.582 | S4+S5 |
+| C8 | 0.823 | 0.815 | all six, mean |
+| C8w | 0.843 | 0.857 | all six, weighted |
+| C8l | **0.892** | **0.919** | all six, logistic |
+| C9 | 0.846 | 0.848 | all minus S3 |
+| C10 | 0.818 | 0.810 | all minus S5 |
+
+H2 is supported where it matters: the strongest single signal reaching the same 5%
+budget is C4 at 0.545/0.539, and the fused logistic model reaches 0.892/0.919, with
+McNemar p < 1e-4 on both seeds. Dropping S3 from the mean rule (C9) is very slightly
+better than keeping it, which is consistent with S3 ranking the genuine evidence
+above the poison.
+
+The controls behave: flipping the sign of S1 takes it from 0.515 to 0.000, and the
+majority-vote variant S3b removes nothing at all.
+
+## The gap this stage deliberately leaves open
+
+`clean_rate` cannot tell "removed the poison" from "removed everything". C1 is the
+case in point: it scores 0.515 while its hard-subset AUC against genuine evidence is
+0.396, because cutting the top-ranked candidates removes poison and evidence alike.
+Answerability after filtering needs a generation from the filtered context, which is
+a paid step that has not been run: the pilot for it would be 5 configurations x 1200
+instances, and C0 reuses the cached baseline prompts exactly.
+
+## Next action (human choice)
+
+Either `python run.py defence` (to be written: generate from the filtered contexts,
+about 3 CNY) or WP8, the Streamlit dashboard over the tables that already exist.
 
 ## R2: valid, and it overturns the pilot's impression
 
