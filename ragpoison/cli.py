@@ -42,7 +42,6 @@ EXIT_PLANNED = 3
 PLANNED: dict[str, str] = {
     "metrics": "WP6: statistics and figures",
     "figures": "WP6: report figures",
-    "ui-check": "WP8: headless Streamlit check",
     "dashboard": "WP8: Streamlit application",
     "scan": "WP9: periodic corpus audit",
 }
@@ -397,6 +396,21 @@ def cmd_selftest(args: argparse.Namespace) -> int:
         worst = max(duplicates.values())
         return f"{len(rows)} rows, {len(doc_ids)} distinct doc_id (max {worst} repeats), identity unique"
 
+    def check_dashboard() -> str:
+        from .viz.ui_check import run_ui_check
+
+        checks = run_ui_check(export=False, backend="stub")
+        if checks.get("exceptions"):
+            raise RuntimeError(f"dashboard raised: {checks['exceptions'][:1]}")
+        if checks.get("tabs") != 5:
+            raise RuntimeError(f"expected 5 tabs, got {checks.get('tabs')}")
+        if checks.get("metrics", 0) < 6 or checks.get("sliders", 0) < 8:
+            raise RuntimeError("dashboard rendered with too few widgets")
+        return (
+            f"5 tabs, {checks['metrics']} metrics, {checks['dataframes']} tables, "
+            f"{checks['figures_drawn']} figures, 0 exceptions"
+        )
+
     def check_ablation_columns() -> str:
         from .signals.base import ABLATION_COLUMNS, PRIOR_COLUMN, columns_for
 
@@ -442,6 +456,7 @@ def cmd_selftest(args: argparse.Namespace) -> int:
         ("signals: calibration statistics", check_calibration),
         ("signals: ablation names resolve to columns", check_ablation_columns),
         ("signals: candidate identity is unique", check_row_identity),
+        ("dashboard: five tabs render headlessly", check_dashboard),
         ("config: experiment configs load", check_all_configs),
         ("config: ablation matrix is complete", check_ablation_matrix),
         ("paths: generated directories exist", check_dirs),
@@ -919,6 +934,43 @@ def cmd_defence(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+
+# --------------------------------------------------------------------------- #
+# dashboard verification (WP8)
+# --------------------------------------------------------------------------- #
+
+
+def cmd_ui_check(args: argparse.Namespace) -> int:
+    from .viz.ui_check import run_ui_check
+
+    try:
+        checks = run_ui_check(export=not args.no_export, backend=args.backend)
+    except ImportError as exc:
+        print(f"UI-CHECK: SKIPPED - streamlit is not importable ({exc})")
+        return EXIT_FAILED
+
+    print(f"tabs: {checks['tabs']} (expected {checks['tabs_expected']})")
+    print(f"backend: {checks.get('backend')}" + (
+        f"   (apptest unavailable: {checks['apptest_error']})" if checks.get("apptest_error") else ""
+    ))
+    print(f"widgets: {checks['metrics']} metrics, {checks['dataframes']} tables, "
+          f"{checks['sliders']} sliders, {checks['buttons']} buttons")
+    if checks["exceptions"]:
+        for item in checks["exceptions"]:
+            print(f"  EXCEPTION: {item}")
+    if checks["errors"]:
+        for item in checks["errors"]:
+            print(f"  ERROR: {item}")
+    for name in checks.get("figures", []):
+        print(f"wrote {name}")
+    print()
+    if checks["passed"]:
+        print("UI-CHECK: PASS")
+        return EXIT_OK
+    print("UI-CHECK: FAIL")
+    return EXIT_FAILED
+
+
 # --------------------------------------------------------------------------- #
 # linters
 # --------------------------------------------------------------------------- #
@@ -1166,6 +1218,19 @@ def build_parser() -> argparse.ArgumentParser:
     defence.add_argument("--dry-run", action="store_true", help="count what would be paid for")
     defence.add_argument("--no-write", action="store_true", help="do not write results")
     defence.set_defaults(func=cmd_defence)
+
+
+    ui_check = subparsers.add_parser(
+        "ui-check", help="render the dashboard headlessly and assert it does not crash"
+    )
+    ui_check.add_argument("--no-export", action="store_true", help="skip the PNG export")
+    ui_check.add_argument(
+        "--backend",
+        default="auto",
+        choices=["auto", "apptest", "stub"],
+        help="auto: real Streamlit, falling back to the recording double",
+    )
+    ui_check.set_defaults(func=cmd_ui_check)
 
     for mode in ("pilot", "full", "replicate"):
         runner = subparsers.add_parser(

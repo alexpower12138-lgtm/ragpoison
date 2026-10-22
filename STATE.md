@@ -1,8 +1,68 @@
 # STATE
 
-last_updated: 2026-10-21 18:00 (end-to-end defence replicated on both seeds)
-current_phase: C
-current_wp: WP7b DONE (both seeds) -> WP8 dashboard
+last_updated: 2026-10-21 20:40 (WP8 complete: five tabs, headless check passes)
+current_phase: D
+current_wp: WP8 DONE -> human screenshots -> WP9 -> WP10
+
+## WP8: the dashboard
+
+Three layers, so the parts that can be tested are separated from the part that cannot:
+
+| file | role | testable without a browser |
+|---|---|---|
+| `viz/data_layer.py` | every file read, every table, the prompt rebuild | yes, covered by selftest |
+| `viz/charts.py` | matplotlib figures on the Agg backend | yes, exported as PNG |
+| `viz/streamlit_app.py` | layout only, no metric is computed here | through the recording double |
+| `viz/ui_check.py` | two render backends plus the PNG export | itself |
+
+Launch: `python -m streamlit run ragpoison\viz\streamlit_app.py`
+
+### The two backends exist for a real reason
+
+`streamlit.testing.v1.AppTest` is the strong check and a normal machine will use it.
+In this environment it cannot run: Streamlit creates a temporary directory on startup
+and changes its permissions on cleanup, which the sandbox refuses, so the process
+aborts for a reason that has nothing to do with the dashboard. The fallback imports the
+real app file with a recording double in place of `streamlit`: every layout call, every
+data access and every figure then executes for real and only the browser plumbing is
+faked. `python run.py ui-check` tries AppTest first and falls back;
+`--backend stub` forces the fallback.
+
+Result: **5 tabs, 10 metrics, 2 tables, 8 sliders, 2 buttons, 7 figures, 0 exceptions.**
+Selftest item 7 runs the same render and fails the build if any tab or widget
+disappears.
+
+### What the tabs show
+
+1. **Prompt inspector.** The ledger stores tokens and cost, not prompt text. Instead of
+   showing a stored copy, the tab *rebuilds* the request from the pipeline and looks its
+   hash up in the paid cache. Verified on seed 42: `audit_baseline_plain`, `s3_answer`,
+   `s4_instruction` and all three S5 views, at ranks covering every batch boundary, all
+   hit. That is a stronger claim than a stored copy: the prompt the code produces today
+   is the prompt that was paid for. Two bugs were found doing this - the S5 batch
+   boundary used `rank // 5` on one side and `(rank - 1) // 5` on the other, and a
+   horizontal bar chart had its 0..1 range applied to the category axis, which hid 13 of
+   15 bars.
+2. **Detection.** KPIs and the confusion matrix for any ablation row, clean_rate for all
+   fifteen, an F1-against-threshold sweep and a precision-recall curve computed on
+   demand, per-signal AUC, and calls-per-instance against clean_rate.
+3. **Signal x attack.** The I2 heatmap, switchable between AUC by family and mean score
+   by label. This is the figure that shows S4 at 1.00 on the trace-carrying families and
+   0.50 on ATK5, and S2 below 0.5 everywhere.
+4. **Per-query inspector.** The whole pool with every signal, slider weights, a live
+   fused score and the surviving context. The live LLM re-run is deliberately **not**
+   wired to the API from inside the dashboard: it shows the budget guard and the exact
+   command instead, because a button that bypasses the cache, the retry policy and the
+   ledger would produce numbers the rest of the project cannot audit.
+5. **Security scan.** Strategy table from `configs/scan_P*.yaml` and an honest empty
+   state; it fills in when WP9 writes `results/scans/index.json`.
+
+## Next action (human)
+
+```
+python -m streamlit run ragpoison\viz\streamlit_app.py
+```
+then screenshot the five tabs. That is the only verification left for this stage.
 
 ## WP7b result: replicated on both seeds
 
